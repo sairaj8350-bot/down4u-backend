@@ -1,0 +1,30 @@
+# Query: DEFAULT_SERVER_URL
+# ContextLines: 1
+
+6 results - 2 files
+
+index.html:
+  1278      // Once deployed to Render (e.g. https://down4u-backend.onrender.com), update this default URL below
+  1279:     const DEFAULT_SERVER_URL = 'https://cute-brooms-cheer.loca.lt';
+  1280  
+
+  1285        if (window.location.origin.includes('localhost:5000')) return '';
+  1286:       return DEFAULT_SERVER_URL;
+  1287      }
+
+  1299        if (serverInput) {
+  1300:         serverInput.value = localStorage.getItem('down4u_server_url') || DEFAULT_SERVER_URL;
+  1301        }
+
+www\index.html:
+  1278      // Once deployed to Render (e.g. https://down4u-backend.onrender.com), update this default URL below
+  1279:     const DEFAULT_SERVER_URL = 'https://cute-brooms-cheer.loca.lt';
+  1280  
+
+  1285        if (window.location.origin.includes('localhost:5000')) return '';
+  1286:       return DEFAULT_SERVER_URL;
+  1287      }
+
+  1299        if (serverInput) {
+  1300:         serverInput.value = localStorage.getItem('down4u_server_url') || DEFAULT_SERVER_URL;
+  1301        }

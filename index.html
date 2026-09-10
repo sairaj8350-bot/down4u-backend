@@ -1,0 +1,2134 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Down4U - All Platform Video Downloader</title>
+  <meta name="description"
+    content="Download HD videos from YouTube, Instagram, TikTok, Facebook, Twitter, Vimeo and 50+ platforms. Fast, free, unlimited.">
+  <meta name="keywords"
+    content="video downloader, youtube downloader, instagram downloader, tiktok downloader, HD downloader, Down4U">
+  <meta name="theme-color" content="#FF2D78">
+
+  <!-- Google Fonts: Plus Jakarta Sans for a clean, human, native app look -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- Unity Ads SDK (async - non-blocking) -->
+  <script src="https://sdk.unityads.unity3d.com/UnityAds.js" async></script>
+
+  <style>
+    :root {
+      /* Brand Color Palette - Inspired by reference mesh gradient */
+      --brand-pink: #FF2D78;
+      --brand-orange: #FF6D00;
+      --brand-yellow: #FFD600;
+      --brand-green: #00875A;
+      --brand-green-hover: #00734D;
+      --brand-blue: #0091FF;
+      --brand-purple: #7C4DFF;
+      --brand-magenta: #D81B60;
+
+      /* UI Surfaces */
+      --surface-white: #FFFFFF;
+      --surface-subtle: #F8F9FC;
+      --surface-card: #FFFFFF;
+      --surface-input: #FFFFFF;
+      --surface-nav: rgba(255, 255, 255, 0.94);
+
+      /* Typography */
+      --text-dark: #1E293B;
+      --text-body: #334155;
+      --text-muted: #64748B;
+      --text-light: #FFFFFF;
+
+      /* Borders & Shadows */
+      --border-light: rgba(255, 255, 255, 0.35);
+      --border-subtle: #E2E8F0;
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.12);
+      --shadow-btn: 0 6px 16px rgba(0, 135, 90, 0.35);
+      --shadow-app: 0 25px 60px -12px rgba(0, 0, 0, 0.25);
+
+      /* Radius */
+      --radius-sm: 10px;
+      --radius-md: 16px;
+      --radius-lg: 24px;
+      --radius-pill: 9999px;
+    }
+
+    /* Dark Mode variables */
+    body.dark-theme {
+      --surface-white: #181920;
+      --surface-subtle: #121318;
+      --surface-card: #20222C;
+      --surface-input: #232530;
+      --surface-nav: rgba(24, 25, 32, 0.94);
+      --text-dark: #F8FAFC;
+      --text-body: #CBD5E1;
+      --text-muted: #94A3B8;
+      --border-subtle: #334155;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background: #0B0D13;
+      color: var(--text-dark);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 0;
+      overflow-x: hidden;
+    }
+
+    /* Full-screen Mobile Device Wrapper */
+    .app-viewport {
+      width: 100%;
+      max-width: 440px;
+      height: 100vh;
+      max-height: 940px;
+      background: linear-gradient(155deg, #FF2E74 0%, #FF5A2B 22%, #FFB000 48%, #49B860 76%, #00B2FE 94%, #9E00FF 100%);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: var(--shadow-app);
+    }
+
+    @media (min-width: 481px) {
+      .app-viewport {
+        border-radius: 40px;
+        height: 92vh;
+        margin: 20px 0;
+        border: 1px solid var(--border-subtle);
+      }
+    }
+
+    /* Subtle background curve */
+    .bg-wave-layer {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 10% 15%, rgba(255, 45, 120, 0.8) 0%, transparent 45%),
+        radial-gradient(circle at 90% 25%, rgba(255, 180, 0, 0.75) 0%, transparent 40%),
+        radial-gradient(circle at 95% 65%, rgba(0, 180, 255, 0.7) 0%, transparent 45%),
+        radial-gradient(circle at 10% 85%, rgba(158, 0, 255, 0.75) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Top Status & App Bar */
+    .top-bar {
+      position: relative;
+      z-index: 10;
+      padding: 16px 20px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--text-dark);
+    }
+
+    .top-time {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-dark);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px;
+      border-radius: 50%;
+      transition: background 0.2s, transform 0.15s;
+    }
+
+    .icon-btn:hover {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    .icon-btn:active {
+      transform: scale(0.92);
+    }
+
+    .icon-btn svg {
+      width: 22px;
+      height: 22px;
+      fill: currentColor;
+    }
+
+    /* Main Scrollable Content Area */
+    .main-scroll {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      position: relative;
+      z-index: 5;
+      padding: 6px 20px 90px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+    }
+
+    .main-scroll::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .main-scroll::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+    }
+
+    /* Brand Header Area */
+    .brand-hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      margin-top: 10px;
+      margin-bottom: 24px;
+      width: 100%;
+    }
+
+    .logo-img {
+      width: 80px;
+      height: 80px;
+      border-radius: 20px;
+      object-fit: cover;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .app-title {
+      font-size: 32px;
+      font-weight: 800;
+      color: #FFFFFF;
+      letter-spacing: -0.5px;
+      margin-bottom: 4px;
+    }
+
+    .app-subtitle {
+      font-size: 14px;
+      font-weight: 500;
+      color: #FFFFFF;
+    }
+
+    /* Downloader Card Section */
+    .downloader-section {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    /* High-contrast Clean URL Input Bar */
+    .input-wrapper {
+      background: var(--surface-input);
+      border-radius: var(--radius-pill);
+      padding: 6px 6px 6px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+      border: 1.5px solid rgba(255, 255, 255, 0.8);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .input-wrapper:focus-within {
+      border-color: #00875A;
+      box-shadow: 0 8px 25px rgba(0, 135, 90, 0.25);
+    }
+
+    .input-link-icon {
+      width: 20px;
+      height: 20px;
+      color: #64748B;
+      flex-shrink: 0;
+    }
+
+    .url-input {
+      flex: 1;
+      border: none;
+      background: transparent;
+      outline: none;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-dark);
+      min-width: 0;
+    }
+
+    .url-input::placeholder {
+      color: #94A3B8;
+      font-weight: 400;
+    }
+
+    /* Paste / Clear secondary button inside input */
+    .btn-input-action {
+      background: #00875A;
+      color: #FFFFFF;
+      border: none;
+      border-radius: var(--radius-pill);
+      padding: 9px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all 0.2s;
+    }
+
+    .btn-input-action:hover {
+      background: var(--brand-green-hover);
+    }
+
+    .btn-input-action:active {
+      transform: scale(0.96);
+    }
+
+    /* Primary Download Button */
+    .btn-download-primary {
+      width: 100%;
+      height: 52px;
+      border-radius: var(--radius-pill);
+      background: #00875A;
+      color: #FFFFFF;
+      border: none;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      cursor: pointer;
+      box-shadow: var(--shadow-btn);
+      transition: all 0.2s ease;
+    }
+
+    .btn-download-primary:hover {
+      background: #00734D;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 22px rgba(0, 135, 90, 0.45);
+    }
+
+    .btn-download-primary:active {
+      transform: translateY(1px);
+      box-shadow: 0 4px 12px rgba(0, 135, 90, 0.3);
+    }
+
+    .btn-download-primary:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Supported Platforms Minimal Pills */
+    .platform-chips {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      width: 100%;
+      padding-bottom: 4px;
+      scrollbar-width: none;
+    }
+
+    .platform-chips::-webkit-scrollbar {
+      display: none;
+    }
+
+    .p-chip {
+      background: var(--surface-card);
+      color: var(--text-body);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-subtle);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+
+    .p-chip:hover {
+      background: var(--surface-subtle);
+      border-color: #CBD5E1;
+      transform: translateY(-1px);
+    }
+
+    /* Dynamic Result / Fetching Area */
+    .content-area {
+      width: 100%;
+      margin-top: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Card Container for Result / Progress */
+    .app-card {
+      background: var(--surface-card);
+      border-radius: var(--radius-lg);
+      padding: 18px;
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border-subtle);
+    }
+
+    /* Loading / Fetching State */
+    .state-loading {
+      text-align: center;
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3.5px solid #E2E8F0;
+      border-top-color: #00875A;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      100% {
+        transform: rotate(360deg);
+      }
+    }
+
+    .loading-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+
+    .loading-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Result Video Metadata View */
+    .media-card {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+
+    .media-thumb-box {
+      width: 88px;
+      height: 88px;
+      border-radius: var(--radius-md);
+      background: #F1F5F9;
+      position: relative;
+      overflow: hidden;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .media-thumb-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .media-thumb-fallback {
+      width: 32px;
+      height: 32px;
+      color: #94A3B8;
+    }
+
+    .media-duration {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      background: rgba(0, 0, 0, 0.8);
+      color: #FFFFFF;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+
+    .media-details {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .platform-badge {
+      align-self: flex-start;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .badge-yt {
+      background: #FEE2E2;
+      color: #DC2626;
+    }
+
+    .badge-ig {
+      background: #FCE7F3;
+      color: #DB2777;
+    }
+
+    .badge-tt {
+      background: #F1F5F9;
+      color: #0F172A;
+    }
+
+    .badge-fb {
+      background: #EDE9FE;
+      color: #7C3AED;
+    }
+
+    .badge-tw {
+      background: #E0F2FE;
+      color: #0284C7;
+    }
+
+    .badge-default {
+      background: #DCFCE7;
+      color: #15803D;
+    }
+
+    .media-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-dark);
+      line-height: 1.35;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .media-meta-row {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin-top: 2px;
+    }
+
+    /* Quality Selector */
+    .quality-section {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .quality-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .quality-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .quality-pill {
+      background: var(--surface-subtle);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-dark);
+      padding: 4px 9px;
+      border-radius: var(--radius-pill);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .quality-pill:hover {
+      border-color: var(--brand-green);
+      color: var(--brand-green);
+    }
+
+    .quality-pill.selected {
+      background: rgba(0, 135, 90, 0.12);
+      border-color: var(--brand-green);
+      color: var(--brand-green);
+      font-weight: 700;
+    }
+
+    .quality-pill.selected::before {
+      content: "✓";
+      font-weight: 800;
+      font-size: 10px;
+    }
+
+    /* Live Progress Bar Container */
+    .progress-section {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-dark);
+      margin-bottom: 8px;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 8px;
+      background: #E2E8F0;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      width: 0%;
+      height: 100%;
+      background: #00875A;
+      border-radius: 4px;
+      transition: width 0.15s ease;
+    }
+
+    .progress-subtext {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* Error Message Box */
+    .error-box {
+      text-align: center;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .error-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: #FEE2E2;
+      color: #EF4444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .error-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #DC2626;
+    }
+
+    .error-msg {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* Quality Selector */
+    .quality-section {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .quality-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 10px;
+    }
+
+    .quality-pills {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .quality-pill {
+      background: var(--surface-subtle);
+      border: 1.5px solid var(--border-subtle);
+      color: var(--text-body);
+      font-size: 13px;
+      font-weight: 700;
+      padding: 8px 16px;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: all 0.18s ease;
+      flex: 1;
+      text-align: center;
+      min-width: 60px;
+    }
+
+    .quality-pill:hover {
+      border-color: #00875A;
+      color: #00875A;
+      background: #f0fdf7;
+    }
+
+    .quality-pill.selected {
+      background: #00875A;
+      border-color: #00875A;
+      color: #FFFFFF;
+      box-shadow: 0 4px 12px rgba(0, 135, 90, 0.3);
+    }
+
+    /* Dedicated Non-intrusive Advertisement Space */
+    .ad-container {
+      width: 100%;
+      margin-top: 10px;
+      border-radius: var(--radius-md);
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--text-dark);
+    }
+
+    .ad-badge {
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      background: var(--surface-subtle);
+      color: var(--text-muted);
+      border: 1px solid var(--border-subtle);
+      padding: 3px 6px;
+      border-radius: 4px;
+    }
+
+    .ad-info {
+      flex: 1;
+    }
+
+    .ad-title {
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .ad-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Clean 3-Tab Bottom Navigation */
+    .bottom-nav {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 70px;
+      background: var(--surface-nav);
+      backdrop-filter: blur(16px);
+      border-top: 1px solid rgba(0, 0, 0, 0.06);
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      padding: 0 10px;
+      z-index: 50;
+    }
+
+    .nav-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 8px 0;
+      transition: all 0.15s;
+    }
+
+    .nav-item.active {
+      color: #00875A;
+    }
+
+    .nav-item svg {
+      width: 22px;
+      height: 22px;
+      fill: currentColor;
+    }
+
+    .nav-label {
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* Modals & Full-view Overlays */
+    .overlay-view {
+      position: absolute;
+      inset: 0;
+      background: var(--surface-white);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      animation: slideIn 0.2s ease-out;
+    }
+
+    .overlay-view.active {
+      display: flex;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .overlay-header {
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .overlay-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+
+    .overlay-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    /* History List Items */
+    .history-item {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border-radius: var(--radius-md);
+      background: var(--surface-subtle);
+      margin-bottom: 10px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .history-thumb {
+      width: 54px;
+      height: 54px;
+      border-radius: var(--radius-sm);
+      object-fit: cover;
+      background: #E2E8F0;
+      flex-shrink: 0;
+    }
+
+    .history-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .history-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-dark);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .history-date {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .history-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn-action-icon {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+
+    .btn-action-icon:hover {
+      background: #E2E8F0;
+      color: var(--text-dark);
+    }
+
+    /* Settings List */
+    .settings-group {
+      margin-bottom: 24px;
+    }
+
+    .settings-group-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      letter-spacing: 0.5px;
+    }
+
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .settings-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-dark);
+    }
+
+    .settings-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* Simple clean toggle switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background-color: #CBD5E1;
+      border-radius: 24px;
+      transition: .2s;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      border-radius: 50%;
+      transition: .2s;
+    }
+
+    input:checked+.slider {
+      background-color: #00875A;
+    }
+
+    input:checked+.slider:before {
+      transform: translateX(20px);
+    }
+
+    /* Side Drawer Menu */
+    .drawer-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 200;
+      display: none;
+      backdrop-filter: blur(4px);
+    }
+
+    .drawer-overlay.active {
+      display: block;
+    }
+
+    .drawer-content {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 80%;
+      max-width: 320px;
+      background: var(--surface-white);
+      display: flex;
+      flex-direction: column;
+      padding: 24px 20px;
+      box-shadow: var(--shadow-md);
+      animation: slideDrawer 0.25s ease-out;
+    }
+
+    @keyframes slideDrawer {
+      from {
+        transform: translateX(-100%);
+      }
+
+      to {
+        transform: translateX(0);
+      }
+    }
+
+    .drawer-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .drawer-nav-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .drawer-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: var(--radius-md);
+      color: var(--text-dark);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .drawer-item:hover {
+      background: var(--surface-subtle);
+    }
+
+    .drawer-item svg {
+      width: 20px;
+      height: 20px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="app-viewport">
+    <!-- Ambient Wave Background Layer -->
+    <div class="bg-wave-layer"></div>
+
+    <!-- Top App Bar with System Time & Standard Actions -->
+    <div class="top-bar">
+      <button class="icon-btn" onclick="toggleDrawer(true)" aria-label="Menu">
+        <svg viewBox="0 0 24 24">
+          <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
+        </svg>
+      </button>
+
+      <div class="top-time" id="systemClock">9:07</div>
+
+      <div class="top-actions">
+        <button class="icon-btn" onclick="focusInput()" aria-label="Search">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+          </svg>
+        </button>
+        <button class="icon-btn" onclick="openOverlay('settingsView')" aria-label="Settings">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Scrollable Body -->
+    <div class="main-scroll" id="mainScroll">
+
+      <!-- Brand Hero Area with Scaled Squircle Logo -->
+      <div class="brand-hero">
+        <img src="logo.png" alt="DOWN4U" class="logo-img">
+        <h1 class="app-title">Down4U</h1>
+        <p class="app-subtitle">All Platform Video Downloader</p>
+      </div>
+
+      <!-- Downloader Input & Action Section -->
+      <div class="downloader-section">
+        <!-- Clean High-Contrast Input -->
+        <div class="input-wrapper">
+          <svg class="input-link-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          <input type="url" id="urlInput" class="url-input" placeholder="Enter your video link" autocomplete="off"
+            spellcheck="false">
+          <button class="btn-input-action" id="pasteActionBtn" onclick="handleInputButton()">Paste</button>
+        </div>
+
+        <!-- Strong Primary Download Button -->
+        <button class="btn-download-primary" id="mainDownloadBtn" onclick="triggerProcess()">
+          <svg style="width:20px;height:20px;fill:currentColor" viewBox="0 0 24 24">
+            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+          </svg>
+          <span>Download</span>
+        </button>
+
+        <!-- Supported Platform Chips -->
+        <div class="platform-chips">
+          <div class="p-chip" onclick="pasteQuickLink('https://www.youtube.com/watch?v=dQw4w9WgXcQ')">YouTube</div>
+          <div class="p-chip" onclick="pasteQuickLink('https://www.instagram.com/reels/')">Instagram</div>
+          <div class="p-chip" onclick="pasteQuickLink('https://www.tiktok.com/trending')">TikTok</div>
+          <div class="p-chip" onclick="pasteQuickLink('https://facebook.com/watch')">Facebook</div>
+          <div class="p-chip" onclick="pasteQuickLink('https://x.com/')">Twitter / X</div>
+          <div class="p-chip" onclick="pasteQuickLink('https://vimeo.com/')">Vimeo</div>
+        </div>
+      </div>
+
+      <!-- Fetching / Result / Progress Area -->
+      <div class="content-area" id="contentArea">
+        <!-- Results or loading states dynamically injected here -->
+      </div>
+
+      <!-- Unity Banner Ad Space -->
+      <div class="ad-space" id="unityBannerAd"
+        style="width:100%;min-height:50px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.04);border-top:1px solid var(--border-subtle);overflow:hidden;">
+        <!-- Banner Ad will be injected here by Unity Ads SDK -->
+      </div>
+
+    </div>
+
+    <!-- 3-Item Bottom Navigation Bar (No camera) -->
+    <div class="bottom-nav">
+      <button class="nav-item" id="navHistoryBtn" onclick="openOverlay('historyView')">
+        <svg viewBox="0 0 24 24">
+          <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+        </svg>
+        <span class="nav-label">Downloads</span>
+      </button>
+
+      <button class="nav-item active" id="navHomeBtn" onclick="closeAllOverlays()">
+        <svg viewBox="0 0 24 24">
+          <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" />
+        </svg>
+        <span class="nav-label">Home</span>
+      </button>
+
+      <button class="nav-item" id="navSettingsBtn" onclick="openOverlay('settingsView')">
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+        </svg>
+        <span class="nav-label">Settings</span>
+      </button>
+
+      <button class="nav-item" id="navShareBtn" onclick="handleNativeShare()">
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z" />
+        </svg>
+        <span class="nav-label">Share</span>
+      </button>
+    </div>
+
+    <!-- Downloads / History View Overlay -->
+    <div class="overlay-view" id="historyView">
+      <div class="overlay-header">
+        <div class="overlay-title">Download History</div>
+        <button class="icon-btn" style="color:var(--text-dark)" onclick="closeAllOverlays()">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div class="overlay-body" id="historyListContainer">
+        <!-- History items injected dynamically -->
+      </div>
+    </div>
+
+    <!-- Settings View Overlay -->
+    <div class="overlay-view" id="settingsView">
+      <div class="overlay-header">
+        <div class="overlay-title">Settings</div>
+        <button class="icon-btn" style="color:var(--text-dark)" onclick="closeAllOverlays()">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div class="overlay-body">
+        <div class="settings-group">
+          <div class="settings-group-title">Preferences</div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Auto-Paste Links</div>
+              <div class="settings-desc">Automatically check clipboard when opening app</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="autoPasteSwitch" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Dark Mode</div>
+              <div class="settings-desc">Switch between light and dark theme</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="themeSwitch" onchange="toggleDarkTheme(this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Backend Connection</div>
+          <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:8px;">
+            <div style="width:100%">
+              <div class="settings-label">Server Host URL</div>
+              <div class="settings-desc">Laptop IP or Cloud Server address for APK API requests</div>
+            </div>
+            <input type="text" id="serverUrlInput" placeholder="http://192.168.1.107:5000"
+              style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border-subtle);font-size:13px;font-family:inherit;background:var(--surface-input);color:var(--text-dark);"
+              onchange="localStorage.setItem('down4u_server_url', this.value.trim())">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Storage & Data</div>
+          <div class="settings-row" onclick="clearDownloadHistory()" style="cursor:pointer;">
+            <div>
+              <div class="settings-label" style="color:#DC2626;">Clear Download History</div>
+              <div class="settings-desc">Remove local record of downloaded videos</div>
+            </div>
+            <svg style="width:20px;height:20px;fill:#DC2626;" viewBox="0 0 24 24">
+              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+            </svg>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">About</div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Down4U Engine</div>
+              <div class="settings-desc">Version 2.4.0 • Real-time Stream Proxy</div>
+            </div>
+            <span style="font-size:12px;font-weight:700;color:#00875A;">ACTIVE</span>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Supported Platforms</div>
+              <div class="settings-desc">YouTube, Instagram, TikTok, Facebook, Twitter, Vimeo, Twitch & 50+ more</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Side Navigation Drawer -->
+    <div class="drawer-overlay" id="drawerOverlay" onclick="if(event.target===this)toggleDrawer(false)">
+      <div class="drawer-content">
+        <div class="drawer-header">
+          <div
+            style="width:36px;height:36px;border-radius:10px;background:#00875A;display:flex;align-items:center;justify-content:center;color:#fff;">
+            <svg style="width:20px;height:20px;fill:currentColor" viewBox="0 0 24 24">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+            </svg>
+          </div>
+          <div>
+            <div style="font-weight:800;font-size:16px;">Down4U</div>
+            <div style="font-size:11px;color:var(--text-muted);">Pro Downloader</div>
+          </div>
+        </div>
+
+        <div class="drawer-nav-list">
+          <div class="drawer-item" onclick="toggleDrawer(false); closeAllOverlays();">
+            <svg viewBox="0 0 24 24">
+              <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" />
+            </svg>
+            <span>Home Downloader</span>
+          </div>
+          <div class="drawer-item" onclick="toggleDrawer(false); openOverlay('historyView');">
+            <svg viewBox="0 0 24 24">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+            </svg>
+            <span>My Downloads</span>
+          </div>
+          <div class="drawer-item" onclick="toggleDrawer(false); openOverlay('settingsView');">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+            </svg>
+            <span>Preferences</span>
+          </div>
+          <div class="drawer-item" onclick="toggleDrawer(false); handleNativeShare();">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z" />
+            </svg>
+            <span>Share Down4U</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // App State
+    let currentDirectUrl = '';
+    let currentFilename = 'Down4U_Video.mp4';
+    let currentVideoData = null;
+    let activeXhr = null;
+
+    // Production Public Cloud Server URL default
+    // Python FastAPI backend on Render (Dual-Engine: yt-dlp + Cobalt fallback)
+    const DEFAULT_SERVER_URL = 'https://down4u-backend.onrender.com';
+
+    // Dynamic API Base URL resolver for Web & APK compatibility with fallback
+    function getApiBaseUrl() {
+      let saved = localStorage.getItem('down4u_server_url');
+      if (saved) {
+        saved = saved.trim().replace(/\/+$/, '');
+        if (saved.includes('loca.lt') || saved.includes('192.168.')) {
+          localStorage.removeItem('down4u_server_url');
+          saved = null;
+        } else {
+          try {
+            const parsed = new URL(saved);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+              return saved;
+            }
+          } catch (e) {
+            localStorage.removeItem('down4u_server_url');
+          }
+        }
+      }
+      if (window.location.origin && window.location.origin.includes('localhost:5000')) return '';
+      return DEFAULT_SERVER_URL;
+    }
+
+    function formatApiUrl(path) {
+      if (!path) return '';
+      if (path.startsWith('http://') || path.startsWith('https://')) return path;
+      const base = getApiBaseUrl();
+      return base ? (base + (path.startsWith('/') ? path : '/' + path)) : path;
+    }
+
+    // Populate Server URL setting input
+    setTimeout(() => {
+      const serverInput = document.getElementById('serverUrlInput');
+      if (serverInput) {
+        serverInput.value = localStorage.getItem('down4u_server_url') || DEFAULT_SERVER_URL;
+      }
+    }, 200);
+
+    // Platform Badge Mapper
+    function getPlatformBadge(platform) {
+      const map = {
+        'YouTube': 'badge-yt',
+        'Instagram': 'badge-ig',
+        'TikTok': 'badge-tt',
+        'Facebook': 'badge-fb',
+        'Twitter': 'badge-tw'
+      };
+      return map[platform] || 'badge-default';
+    }
+
+    // Dynamic Fallback SVG Brand Logo
+    function getFallbackBrandSvg() {
+      return `
+        <svg class="brand-svg-icon" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="100" height="100" rx="24" fill="url(#brandGrad)"/>
+          <path d="M50 24V64M50 64L34 48M50 64L66 48" stroke="white" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M28 76H72" stroke="white" stroke-width="8" stroke-linecap="round"/>
+          <defs>
+            <linearGradient id="brandGrad" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#FF2D78"/>
+              <stop offset="0.5" stop-color="#FF6D00"/>
+              <stop offset="1" stop-color="#00875A"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      `;
+    }
+
+    // System Clock update (e.g., 9:07)
+    function updateClock() {
+      const now = new Date();
+      let hours = now.getHours();
+      let minutes = now.getMinutes();
+      const str = `${hours % 12 || 12}:${minutes.toString().padStart(2, '0')}`;
+      const el = document.getElementById('systemClock');
+      if (el) el.textContent = str;
+    }
+    setInterval(updateClock, 30000);
+    updateClock();
+
+    // Input Actions: Paste or Clear
+    async function handleInputButton() {
+      const input = document.getElementById('urlInput');
+      const btn = document.getElementById('pasteActionBtn');
+      const mainBtn = document.getElementById('mainDownloadBtn');
+      if (mainBtn) {
+        mainBtn.disabled = false;
+        mainBtn.innerHTML = `
+          <svg style="width:20px;height:20px;fill:currentColor" viewBox="0 0 24 24">
+            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+          </svg>
+          <span>Download</span>
+        `;
+      }
+
+      if (input.value.trim().length > 0) {
+        input.value = '';
+        btn.textContent = 'Paste';
+        input.focus();
+        return;
+      }
+
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            input.value = text.trim();
+            btn.textContent = 'Clear';
+            triggerProcess();
+          }
+        } catch (e) {
+          input.focus();
+        }
+      } else {
+        input.focus();
+      }
+    }
+
+    document.getElementById('urlInput').addEventListener('input', function () {
+      const btn = document.getElementById('pasteActionBtn');
+      btn.textContent = this.value.trim().length > 0 ? 'Clear' : 'Paste';
+    });
+
+    function focusInput() {
+      const input = document.getElementById('urlInput');
+      input.value = '';
+      const pasteBtn = document.getElementById('pasteActionBtn');
+      if (pasteBtn) pasteBtn.textContent = 'Paste';
+      const mainBtn = document.getElementById('mainDownloadBtn');
+      if (mainBtn) {
+        mainBtn.disabled = false;
+        mainBtn.innerHTML = `
+          <svg style="width:20px;height:20px;fill:currentColor" viewBox="0 0 24 24">
+            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+          </svg>
+          <span>Download</span>
+        `;
+      }
+      input.focus();
+      input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function pasteQuickLink(url) {
+      const input = document.getElementById('urlInput');
+      input.value = url;
+      document.getElementById('pasteActionBtn').textContent = 'Clear';
+      triggerProcess();
+    }
+
+    // Background Warm-up to keep Cloud API primed
+    (function warmUpBackend() {
+      try {
+        const pingUrl = formatApiUrl('/api/health');
+        fetch(pingUrl, { method: 'GET', cache: 'no-store' }).catch(() => {});
+      } catch (e) {}
+    })();
+
+    // Helper: Smart URL validator & normalizer
+    function cleanAndValidateUrl(inputUrl) {
+      if (!inputUrl) return { valid: false, error: 'Please paste a valid video URL.' };
+      let url = inputUrl.trim();
+      
+      // Auto-prefix https if user only pasted domain/path
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'https://' + url;
+      }
+
+      try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.toLowerCase().replace('www.', '');
+
+        // Check for YouTube short links
+        if (host === 'youtu.be') {
+          const id = parsed.pathname.replace(/^\/+/, '').split(/[?#]/)[0];
+          if (id.length < 9) {
+            return { valid: false, error: 'Incomplete YouTube link. Please copy and paste the complete video link.' };
+          }
+        }
+
+        // Check for Instagram short links
+        if (host.includes('instagram.com')) {
+          if (!parsed.pathname.includes('/p/') && !parsed.pathname.includes('/reel/') && !parsed.pathname.includes('/reels/') && !parsed.pathname.includes('/tv/')) {
+            if (parsed.pathname === '/' || parsed.pathname === '') {
+              return { valid: false, error: 'Please paste a direct Instagram Reel or Post link.' };
+            }
+          }
+        }
+
+        return { valid: true, url };
+      } catch (e) {
+        return { valid: false, error: 'Invalid URL format. Please paste a valid web address.' };
+      }
+    }
+
+    // Trigger Fetch Process (Ultra-Reliable with Auto-Retry)
+    async function triggerProcess() {
+      const input = document.getElementById('urlInput');
+      const rawUrl = input.value.trim();
+
+      const validation = cleanAndValidateUrl(rawUrl);
+      if (!validation.valid) {
+        input.focus();
+        renderErrorResult(validation.error);
+        return;
+      }
+
+      const url = validation.url;
+      input.value = url; // Show cleaned URL
+
+      const mainBtn = document.getElementById('mainDownloadBtn');
+      mainBtn.disabled = true;
+      mainBtn.innerHTML = `
+        <div class="spinner" style="width:20px;height:20px;border-width:2.5px;border-top-color:#fff;"></div>
+        <span>Connecting source...</span>
+      `;
+
+      const contentArea = document.getElementById('contentArea');
+      contentArea.innerHTML = `
+        <div class="app-card">
+          <div class="state-loading">
+            <div class="spinner"></div>
+            <div class="loading-title">Fetching video info...</div>
+            <div class="loading-desc">Extracting HD media formats, please wait</div>
+          </div>
+        </div>
+      `;
+
+      // Smooth scroll to content
+      setTimeout(() => {
+        contentArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
+
+      // Fetch with automatic 1-second silent retry on network hiccup
+      async function executeFetch(retryCount = 0) {
+        try {
+          const apiUrl = formatApiUrl('/api/info?url=' + encodeURIComponent(url));
+          const response = await fetch(apiUrl, {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+              'Bypass-Tunnel-Reminder': 'true'
+            }
+          });
+          const data = await response.json();
+
+          if (!response.ok || data.status === 'error') {
+            // New Python backend structured error format
+            const pe = data.primary_error;
+            let errMsg = data.message || data.error || 'Failed to extract video';
+            if (pe && pe.code) {
+              if (pe.code === 'YT_IP_BLOCKED') errMsg = '⚠️ Cloud IP blocked by YouTube. The server admin needs to add cookies (YT_COOKIES).';
+              else if (pe.code === 'YT_LOGIN_REQUIRED') errMsg = '🔒 Login required. Server needs cookies configured.';
+              else if (pe.code === 'YT_PRIVATE') errMsg = '🔒 This video is private.';
+              else if (pe.code === 'YT_UNAVAILABLE') errMsg = '❌ Video unavailable or deleted.';
+              else if (pe.code === 'YT_FORBIDDEN') errMsg = '🚫 Access forbidden (region/age restriction).';
+            }
+            throw new Error(errMsg);
+          }
+
+          // Map new Python API response → internal format
+          const engine = data.engine || 'yt-dlp';
+          const qualDetails = data.quality_details || {};
+          const qualList = (data.qualities || []).map(q => ({
+            label: q,
+            downloadUrl: formatApiUrl('/api/download?url=' + encodeURIComponent(url) +
+              '&quality=' + encodeURIComponent(q) +
+              (qualDetails[q] ? '&format_id=' + encodeURIComponent(qualDetails[q].format_id) : ''))
+          }));
+
+          // If cobalt engine was used, use the direct cobalt URL
+          if (engine === 'cobalt' && data._cobalt_url) {
+            qualList.push({ label: 'Best', downloadUrl: data._cobalt_url });
+          }
+
+          const mappedData = {
+            status: 'success',
+            title: data.title || 'Video Ready',
+            thumbnail: data.thumbnail || null,
+            duration: data.duration ? formatDuration(data.duration) : '',
+            uploader: data.uploader || '',
+            platform: detectPlatform(url),
+            mediaType: 'video',
+            fileExt: 'mp4',
+            size: 'HD MP4',
+            qualities: qualList,
+            downloadUrl: qualList.length > 0 ? qualList[0].downloadUrl : '',
+            filename: (data.title || 'Down4U_Video').replace(/[^\w\s\-]/g, '').trim() + '.mp4',
+            engine: engine
+          };
+
+          currentDirectUrl = mappedData.downloadUrl;
+          currentFilename = mappedData.filename;
+          currentVideoData = mappedData;
+
+          renderMediaResult(mappedData);
+        } catch (err) {
+          if (retryCount < 1 && (err.name === 'TypeError' || err.message.includes('fetch'))) {
+            // Auto silent retry
+            setTimeout(() => executeFetch(retryCount + 1), 1200);
+          } else {
+            renderErrorResult(err.message || 'Could not connect to video server. Please check your internet.');
+          }
+        } finally {
+          mainBtn.disabled = false;
+          mainBtn.innerHTML = `
+            <svg style="width:20px;height:20px;fill:currentColor" viewBox="0 0 24 24">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+            </svg>
+            <span>Download</span>
+          `;
+        }
+      }
+
+      executeFetch(0);
+    }
+
+    // Render Video / Photo Details
+    function renderMediaResult(data) {
+      const platform = data.platform || 'Media';
+      const badgeClass = getPlatformBadge(platform);
+      const isImage = data.mediaType === 'image' || data.isImage;
+      const title = data.title || (isImage ? 'Photo Ready' : 'Video Ready');
+      const duration = data.duration || '';
+      const size = data.size || (isImage ? 'HD Photo' : 'HD MP4');
+      const qualities = isImage ? [] : (data.qualities || []);
+      const fileExt = (data.fileExt || (isImage ? 'jpg' : 'mp4')).toUpperCase();
+
+      const thumbContent = data.thumbnail
+        ? `<img src="${escapeHtml(data.thumbnail)}" alt="thumbnail" onerror="this.style.display='none'">`
+        : `<svg class="media-thumb-fallback" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>`;
+
+      // Build quality pills HTML (only for videos, never for photos)
+      let qualityHtml = '';
+      if (!isImage && qualities && qualities.length > 0) {
+        const defaultIdx = qualities.length - 1; // highest quality selected by default
+        qualityHtml = `
+          <div class="quality-section">
+            <div class="quality-label">Select Quality</div>
+            <div class="quality-pills">
+              ${qualities.map((q, i) => `
+                <button class="quality-pill ${i === defaultIdx ? 'selected' : ''}"
+                  onclick="selectQuality(${i})"
+                  id="qpill_${i}"
+                  data-url="${escapeHtml(q.downloadUrl)}">
+                  ${escapeHtml(q.label)}
+                </button>
+              `).join('')}
+            </div>
+          </div>`;
+        // Set default URL to highest quality
+        currentDirectUrl = formatApiUrl(qualities[defaultIdx].downloadUrl);
+        if (data.filename && qualities[defaultIdx].height) {
+          currentFilename = data.filename.replace(/\.mp4$/i, `_${qualities[defaultIdx].height}p.mp4`);
+        }
+      }
+
+      const metaRow = isImage
+        ? `🖼️ ${escapeHtml(size)} • ${escapeHtml(fileExt)}`
+        : `📦 ${escapeHtml(size)} • MP4`;
+
+      const btnLabel = isImage ? 'Download Photo' : 'Download Video';
+
+      document.getElementById('contentArea').innerHTML = `
+        <div class="app-card" id="resultCard">
+          <div class="media-card">
+            <div class="media-thumb-box">
+              ${thumbContent}
+              ${duration ? `<div class="media-duration">${escapeHtml(duration)}</div>` : ''}
+            </div>
+            <div class="media-details">
+              <span class="platform-badge ${badgeClass}">${escapeHtml(platform)}</span>
+              <div class="media-title">${escapeHtml(title)}</div>
+              <div class="media-meta-row">${metaRow}</div>
+            </div>
+          </div>
+
+          ${qualityHtml}
+
+          <!-- Download Progress Section -->
+          <div id="progressSection" class="progress-section" style="display:none;">
+            <div class="progress-header">
+              <span id="progressStatus">Downloading ${isImage ? 'photo' : 'video'} stream...</span>
+              <span id="progressPercent">0%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" id="progressBarFill"></div>
+            </div>
+            <div class="progress-subtext">
+              <span id="progressSpeed">Preparing stream...</span>
+              <span id="progressBytes">0 MB</span>
+            </div>
+          </div>
+
+          <!-- Action Button -->
+          <button class="btn-download-primary" id="startDlBtn" onclick="startDownloadStream()" style="margin-top:14px;">
+            <svg style="width:20px;height:20px;fill:currentColor" viewBox="0 0 24 24">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+            </svg>
+            <span id="startDlLabel">${btnLabel}</span>
+          </button>
+        </div>
+      `;
+
+      // Store qualities for selectQuality function
+      window._currentQualities = qualities;
+    }
+
+    // Quality Selection Handler
+    function selectQuality(idx) {
+      const qualities = window._currentQualities || [];
+      if (!qualities[idx]) return;
+
+      // Update selected URL
+      currentDirectUrl = formatApiUrl(qualities[idx].downloadUrl);
+      if (currentVideoData && currentVideoData.filename && qualities[idx].height) {
+        currentFilename = currentVideoData.filename.replace(/\.mp4$/i, `_${qualities[idx].height}p.mp4`);
+      }
+
+      // Update pill highlight
+      document.querySelectorAll('.quality-pill').forEach((el, i) => {
+        el.classList.toggle('selected', i === idx);
+      });
+
+      // Reset progress if visible
+      const progressSection = document.getElementById('progressSection');
+      if (progressSection && progressSection.style.display !== 'none') {
+        progressSection.style.display = 'none';
+        const startDlBtn = document.getElementById('startDlBtn');
+        const startDlLabel = document.getElementById('startDlLabel');
+        if (startDlBtn) {
+          startDlBtn.disabled = false;
+          startDlBtn.style.background = '';
+        }
+        if (startDlLabel) startDlLabel.textContent = 'Download Video';
+      }
+    }
+
+    // Render Error State
+    function renderErrorResult(message) {
+      document.getElementById('contentArea').innerHTML = `
+        <div class="app-card">
+          <div class="error-box">
+            <div class="error-icon">
+              <svg style="width:24px;height:24px;fill:currentColor" viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+              </svg>
+            </div>
+            <div class="error-title">Could Not Extract Video</div>
+            <div class="error-msg">${escapeHtml(message)}</div>
+            <button class="btn-input-action" onclick="focusInput()" style="margin-top:6px;">Try Another Link</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // Start Downloading Video Stream
+    function startDownloadStream() {
+      if (!currentDirectUrl) return;
+
+      // Unity Interstitial Ad - FULLY non-blocking, never interrupts download
+      try {
+        if (typeof window.showAd === 'function') {
+          window.showAd();
+        } else if (typeof window.showUnityInterstitial === 'function') {
+          window.showUnityInterstitial();
+        }
+      } catch (e) { /* Unity Ads fail silently - download ALWAYS continues */ }
+
+      const progressSection = document.getElementById('progressSection');
+      const startDlBtn = document.getElementById('startDlBtn');
+      const startDlLabel = document.getElementById('startDlLabel');
+      const progressBarFill = document.getElementById('progressBarFill');
+      const progressPercent = document.getElementById('progressPercent');
+      const progressStatus = document.getElementById('progressStatus');
+      const progressSpeed = document.getElementById('progressSpeed');
+      const progressBytes = document.getElementById('progressBytes');
+
+      progressSection.style.display = 'block';
+      startDlBtn.disabled = true;
+      startDlLabel.textContent = 'Downloading...';
+
+      if (activeXhr) activeXhr.abort();
+
+      const xhr = new XMLHttpRequest();
+      activeXhr = xhr;
+      xhr.open('GET', currentDirectUrl, true);
+      xhr.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
+      xhr.responseType = 'blob';
+
+      xhr.onprogress = function (e) {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          progressBarFill.style.width = pct + '%';
+          progressPercent.textContent = pct + '%';
+
+          const loadedMB = (e.loaded / (1024 * 1024)).toFixed(1);
+          const totalMB = (e.total / (1024 * 1024)).toFixed(1);
+          progressBytes.textContent = `${loadedMB} MB / ${totalMB} MB`;
+
+          if (pct < 30) progressStatus.textContent = 'Fetching video data...';
+          else if (pct < 80) progressStatus.textContent = 'Streaming high speed MP4...';
+          else progressStatus.textContent = 'Finalizing file...';
+        } else {
+          const loadedMB = (e.loaded / (1024 * 1024)).toFixed(1);
+          progressBytes.textContent = `${loadedMB} MB`;
+          progressStatus.textContent = 'Downloading...';
+          progressBarFill.style.width = '70%';
+        }
+      };
+
+      xhr.onload = function () {
+        if (xhr.status === 200) {
+          const blob = xhr.response;
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = currentFilename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+          // Save to local history
+          saveToHistory(currentVideoData);
+
+          // Success UI
+          progressBarFill.style.width = '100%';
+          progressPercent.textContent = '100%';
+          progressStatus.textContent = 'Download Complete!';
+          progressSpeed.textContent = 'Saved to your device';
+
+          startDlBtn.disabled = false;
+          startDlBtn.style.background = '#00875A';
+          startDlLabel.textContent = '✓ Download Again';
+          startDlBtn.onclick = startDownloadStream;
+        } else {
+          progressStatus.textContent = 'Download failed (Server Error)';
+          startDlBtn.disabled = false;
+          startDlLabel.textContent = 'Retry Download';
+        }
+      };
+
+      xhr.onerror = function () {
+        progressStatus.textContent = 'Network error during download';
+        startDlBtn.disabled = false;
+        startDlLabel.textContent = 'Retry Download';
+      };
+
+      xhr.send();
+    }
+
+    // Save Downloaded Item to Local History
+    function saveToHistory(data) {
+      if (!data) return;
+      try {
+        const list = JSON.parse(localStorage.getItem('down4u_history') || '[]');
+        const item = {
+          id: Date.now(),
+          title: data.title || 'Video',
+          platform: data.platform || 'Media',
+          thumbnail: data.thumbnail || '',
+          size: data.size || '',
+          date: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        list.unshift(item);
+        // Keep max 30 items
+        localStorage.setItem('down4u_history', JSON.stringify(list.slice(0, 30)));
+      } catch (e) {
+        console.error('History save error', e);
+      }
+    }
+
+    // Load and Render History View
+    function renderHistoryList() {
+      const container = document.getElementById('historyListContainer');
+      try {
+        const list = JSON.parse(localStorage.getItem('down4u_history') || '[]');
+        if (list.length === 0) {
+          container.innerHTML = `
+            <div style="text-align:center;padding:40px 20px;color:var(--text-muted);">
+              <svg style="width:48px;height:48px;fill:#CBD5E1;margin-bottom:12px;" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+              <div style="font-weight:700;font-size:15px;color:var(--text-dark);margin-bottom:4px;">No Downloads Yet</div>
+              <div style="font-size:13px;">Downloaded videos will appear here.</div>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = list.map(item => `
+          <div class="history-item">
+            <img class="history-thumb" src="${escapeHtml(item.thumbnail || '')}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' fill=\\'%2394A3B8\\' viewBox=\\'0 0 24 24\\'><path d=\\'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z\\'/></svg>'">
+            <div class="history-info">
+              <div class="history-title">${escapeHtml(item.title)}</div>
+              <div class="history-date">${escapeHtml(item.platform)} • ${escapeHtml(item.date)}</div>
+            </div>
+            <div class="history-actions">
+              <button class="btn-action-icon" onclick="shareItem('${escapeHtml(item.title)}')" title="Share">
+                <svg style="width:18px;height:18px;fill:currentColor" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>
+              </button>
+              <button class="btn-action-icon" onclick="deleteHistoryItem(${item.id})" title="Delete">
+                <svg style="width:18px;height:18px;fill:currentColor" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              </button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('History render error', e);
+      }
+    }
+
+    function deleteHistoryItem(id) {
+      try {
+        let list = JSON.parse(localStorage.getItem('down4u_history') || '[]');
+        list = list.filter(item => item.id !== id);
+        localStorage.setItem('down4u_history', JSON.stringify(list));
+        renderHistoryList();
+      } catch (e) { }
+    }
+
+    function clearDownloadHistory() {
+      if (confirm('Clear all download history records?')) {
+        localStorage.removeItem('down4u_history');
+        renderHistoryList();
+      }
+    }
+
+    // Native OS Share Support
+    async function handleNativeShare() {
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: 'Down4U - Video Downloader',
+            text: 'Download HD videos from YouTube, Instagram, TikTok & 50+ platforms with Down4U!',
+            url: window.location.href
+          });
+        } catch (e) { }
+      } else {
+        // Fallback: Copy link
+        navigator.clipboard?.writeText(window.location.href);
+        alert('Down4U link copied to clipboard!');
+      }
+    }
+
+    function shareItem(title) {
+      if (navigator.share) {
+        navigator.share({ title: title, url: window.location.href }).catch(() => { });
+      } else {
+        alert(`Shared: ${title}`);
+      }
+    }
+
+    // Overlays Management
+    function openOverlay(viewId) {
+      closeAllOverlays();
+      const view = document.getElementById(viewId);
+      if (view) {
+        view.classList.add('active');
+        if (viewId === 'historyView') {
+          renderHistoryList();
+          document.getElementById('navHistoryBtn')?.classList.add('active');
+          document.getElementById('navHomeBtn')?.classList.remove('active');
+        } else if (viewId === 'settingsView') {
+          document.getElementById('navSettingsBtn')?.classList.add('active');
+          document.getElementById('navHomeBtn')?.classList.remove('active');
+        }
+      }
+    }
+
+    function closeAllOverlays() {
+      document.querySelectorAll('.overlay-view').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+      document.getElementById('navHomeBtn')?.classList.add('active');
+    }
+
+    function toggleDrawer(show) {
+      const drawer = document.getElementById('drawerOverlay');
+      if (drawer) {
+        if (show) drawer.classList.add('active');
+        else drawer.classList.remove('active');
+      }
+    }
+
+    function toggleDarkTheme(enable) {
+      if (enable) document.body.classList.add('dark-theme');
+      else document.body.classList.remove('dark-theme');
+    }
+
+    // Utility: XSS Escaping
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    // Enter Key Listener
+    document.getElementById('urlInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') triggerProcess();
+    });
+
+    // ── Instant Unity Ads Initialization (Decoupled from Network/Fetch) ─────
+    (function initUnityAds() {
+      const GAME_ID = '6180614';
+      const BANNER_ID = 'Banner_Android';
+      const INTERSTITIAL_ID = 'Interstitial_Android';
+      const IS_TEST_MODE = true;
+
+      let initialized = false;
+
+      function renderBannerPlaceholder() {
+        const adSpace = document.getElementById('unityBannerAd');
+        if (adSpace && !adSpace.querySelector('.unity-banner-box')) {
+          adSpace.innerHTML = `
+            <div class="unity-banner-box" style="display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 16px;background:rgba(255,255,255,0.7);backdrop-filter:blur(8px);border-radius:12px;margin:8px auto;max-width:320px;border:1px dashed rgba(0,135,90,0.3);box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+              <span style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#00875A;background:rgba(0,135,90,0.12);padding:2px 6px;border-radius:4px;">Ad</span>
+              <span style="font-size:12px;font-weight:600;color:var(--text-secondary,#444);">Unity Ads • Ready & Monetized</span>
+            </div>
+          `;
+          adSpace.style.display = 'block';
+        }
+      }
+
+      function startUnityAdsEngine() {
+        if (initialized) return;
+        initialized = true;
+
+        renderBannerPlaceholder();
+
+        // 1. Native Capacitor Android Plugin
+        if (window.Capacitor && window.CapacitorUnityAds) {
+          const UnityPlugin = window.CapacitorUnityAds;
+          UnityPlugin.initialize({ gameId: GAME_ID, testMode: IS_TEST_MODE })
+            .then(function () {
+              UnityPlugin.loadBanner({ placementId: BANNER_ID }).then(function () {
+                UnityPlugin.showBanner({ placementId: BANNER_ID });
+              }).catch(function (e) { console.warn('[Unity Banner] Plugin Load Warning:', e); });
+
+              UnityPlugin.load({ placementId: INTERSTITIAL_ID })
+                .catch(function (e) { console.warn('[Unity Interstitial] Preload Warning:', e); });
+            })
+            .catch(function (e) { console.warn('[Unity Ads Native] Init Warning:', e); });
+        }
+        // 2. Web SDK Fallback
+        else if (typeof UnityAds !== 'undefined') {
+          UnityAds.initialize(GAME_ID, IS_TEST_MODE, {
+            onComplete: function () {
+              UnityAds.loadBanner(BANNER_ID, {
+                onLoad: function (bId) {
+                  const container = document.getElementById('unityBannerAd');
+                  if (container) container.id = bId;
+                }
+              });
+              UnityAds.load(INTERSTITIAL_ID, {});
+            }
+          });
+        }
+      }
+
+      // Trigger immediately when network/device is ready
+      document.addEventListener('deviceready', startUnityAdsEngine, false);
+      document.addEventListener('DOMContentLoaded', startUnityAdsEngine, false);
+      window.addEventListener('load', startUnityAdsEngine, false);
+      setTimeout(startUnityAdsEngine, 500);
+
+      window.showUnityInterstitial = function () {
+        try {
+          if (window.Capacitor && window.CapacitorUnityAds) {
+            window.CapacitorUnityAds.show({ placementId: INTERSTITIAL_ID }).catch(function () { });
+          } else if (typeof UnityAds !== 'undefined' && typeof UnityAds.show === 'function') {
+            UnityAds.show(INTERSTITIAL_ID);
+          }
+        } catch (e) { }
+      };
+      window.showAd = window.showUnityInterstitial;
+    })();
+  </script>
+</body>
+
+</html>

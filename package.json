@@ -1,0 +1,27 @@
+{
+  "name": "any-video-downloader",
+  "version": "2.0.0",
+  "description": "Free HD video downloader supporting YouTube, Instagram, TikTok, Facebook and more",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "axios": "^1.18.1",
+    "capacitor-unity-ads": "^1.0.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

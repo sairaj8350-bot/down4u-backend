@@ -1,0 +1,18 @@
+{
+  "appId": "com.down4u.videodownloader",
+  "appName": "Down4U",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#FFFFFF"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#FF2D78"
+    }
+  }
+}

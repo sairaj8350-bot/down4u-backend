@@ -1,0 +1,4 @@
+
+Usage: yt-dlp.exe [OPTIONS] URL [URL...]
+
+yt-dlp.exe: error: wrong --extractor-args formatting; it should be IE_KEY:ARGS, not """

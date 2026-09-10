@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Down4U</string>
+    <string name="title_activity_main">Down4U</string>
+    <string name="package_name">com.down4u.videodownloader</string>
+    <string name="custom_url_scheme">com.down4u.videodownloader</string>
+</resources>
