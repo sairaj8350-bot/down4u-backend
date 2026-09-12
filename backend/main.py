@@ -1,4 +1,4 @@
-﻿"""
+"""
 AnyVideoDownloader - Python FastAPI Backend
 Dual-Engine Fallback: yt-dlp (iOS/Android spoofing + cookies) -> cobalt.tools
 """
@@ -17,10 +17,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("avd")
 
 COOKIES_ENV = "YT_COOKIES"
-COBALT_API  = "https://api.cobalt.tools"
+COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "").strip()
+COBALT_INSTANCES = [
+    os.environ.get("COBALT_API", "").strip(),
+    "https://api.cobalt.tools",
+    "https://cobalt-api.kwiatekm.com",
+    "https://cobalt.tools",
+    "https://co.wuk.sh",
+]
 BROWSER_UA  = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
-PLAYER_CLIENTS = ["ios", "android", "mweb", "web"]
+PLAYER_CLIENTS = ["ios", "android", "tvhtml5", "mweb", "web"]
 
 def _write_cookie_file():
     raw = os.environ.get(COOKIES_ENV, "").strip()
@@ -32,7 +39,7 @@ def _write_cookie_file():
     return tmp.name
 
 def _base_opts(cookie_file):
-    o = {"quiet": True, "no_warnings": True, "noplaylist": True,
+    o = {"quiet": True, "no_warnings": True, "noplaylist": True, "socket_timeout": 12,
          "http_headers": {"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"}}
     if cookie_file: o["cookiefile"] = cookie_file
     return o
@@ -59,22 +66,51 @@ def _err(exc):
     if "sign in" in m or "login" in m: return "YT_LOGIN_REQUIRED","Login required. Set YT_COOKIES env-var."
     return "YTDLP_ERROR", str(exc)
 
+async def _oembed(url: str):
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+        r = await client.get(f"https://www.youtube.com/oembed?url={url}&format=json")
+        if r.status_code == 200:
+            return r.json()
+    return None
+
 async def _cobalt(url, quality="1080"):
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(COBALT_API+"/",
-            json={"url":url,"videoQuality":quality,"audioFormat":"mp3","filenameStyle":"pretty","downloadMode":"auto"},
-            headers={"Content-Type":"application/json","Accept":"application/json"})
-        d = r.json(); s = d.get("status")
-        if s in ("redirect","stream","tunnel"): return d.get("url") or d.get("u")
-        if s == "picker": return d["picker"][0]["url"]
-        raise RuntimeError(f"Cobalt status={s}")
+    instances = [inst for inst in COBALT_INSTANCES if inst]
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if COBALT_API_KEY:
+        headers["Authorization"] = f"Bearer {COBALT_API_KEY}"
+    
+    last_err = None
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+        for inst in instances:
+            for endpoint in [inst.rstrip("/") + "/", inst.rstrip("/") + "/api/json"]:
+                try:
+                    payload = {
+                        "url": url,
+                        "videoQuality": quality,
+                        "audioFormat": "mp3",
+                        "filenameStyle": "pretty",
+                        "downloadMode": "auto"
+                    }
+                    r = await c.post(endpoint, json=payload, headers=headers)
+                    if r.status_code >= 400:
+                        continue
+                    d = r.json()
+                    s = d.get("status")
+                    if s in ("redirect", "stream", "tunnel"):
+                        return d.get("url") or d.get("u")
+                    if s == "picker" and d.get("picker"):
+                        return d["picker"][0]["url"]
+                except Exception as e:
+                    last_err = e
+                    continue
+    raise RuntimeError(f"Cobalt instances failed: {last_err}")
 
 @asynccontextmanager
 async def lifespan(app):
     logger.info("AnyVideoDownloader backend started. Cookies=%s", bool(os.environ.get(COOKIES_ENV)))
     yield
 
-app = FastAPI(title="AnyVideoDownloader API", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="AnyVideoDownloader API", version="3.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/health")
@@ -102,6 +138,28 @@ async def get_info(url: str = Query(...)):
     except Exception as e:
         code,msg = _err(e); ytdlp_err={"code":code,"message":msg}
         logger.warning("Engine1 fail [%s]: %s", code, e)
+
+    # Fallback 1: YouTube oEmbed metadata (100% reliable for video details)
+    if "youtube.com" in url or "youtu.be" in url:
+        try:
+            oe = await _oembed(url)
+            if oe:
+                return {
+                    "status": "success",
+                    "engine": "youtube-oembed",
+                    "title": oe.get("title", "YouTube Video"),
+                    "thumbnail": oe.get("thumbnail_url"),
+                    "duration": None,
+                    "uploader": oe.get("author_name"),
+                    "view_count": None,
+                    "qualities": ["1080p", "720p", "480p", "360p"],
+                    "quality_details": {},
+                    "note": "Fetched via metadata fallback. Set YT_COOKIES in Render for full streaming."
+                }
+        except Exception as e_oe:
+            logger.warning("oEmbed fallback fail: %s", e_oe)
+
+    # Fallback 2: Cobalt
     try:
         cu = await _cobalt(url)
         return {"status":"success","engine":"cobalt","title":"Video (via Cobalt)","thumbnail":None,
@@ -109,8 +167,16 @@ async def get_info(url: str = Query(...)):
                 "qualities":["1080p","720p","480p","360p"],"quality_details":{},"_cobalt_url":cu}
     except Exception as e2:
         logger.error("Engine2 fail: %s", e2)
-    return JSONResponse(502,{"status":"error","primary_error":ytdlp_err,
-        "fallback_error":"COBALT_FAILED","message":"Both engines failed. Set YT_COOKIES and retry."})
+
+    return JSONResponse(
+        status_code=502,
+        content={
+            "status": "error",
+            "primary_error": ytdlp_err,
+            "fallback_error": "COBALT_FAILED",
+            "message": "Both engines failed. Set YT_COOKIES environment variable in Render and retry."
+        }
+    )
 
 @app.get("/api/download")
 async def download(url: str = Query(...), quality: str = Query("720p"), format_id: Optional[str] = Query(None)):
@@ -155,8 +221,16 @@ async def download(url: str = Query(...), quality: str = Query("720p"), format_i
             headers={"Content-Disposition":'attachment; filename="video.mp4"',"X-Engine":"cobalt"})
     except Exception as e2:
         logger.error("DL Engine2 fail: %s", e2)
-    return JSONResponse(502,{"status":"error","primary_error":ytdlp_err,
-        "fallback_error":"COBALT_FAILED","message":"Both engines failed. Set YT_COOKIES and retry."})
+
+    return JSONResponse(
+        status_code=502,
+        content={
+            "status": "error",
+            "primary_error": ytdlp_err,
+            "fallback_error": "COBALT_FAILED",
+            "message": "Both engines failed. Set YT_COOKIES environment variable in Render and retry."
+        }
+    )
 
 @app.get("/api/formats")
 async def formats(url: str = Query(...)):
@@ -170,4 +244,7 @@ async def formats(url: str = Query(...)):
         return {"status":"success","formats":fs}
     except Exception as e:
         code,msg = _err(e)
-        return JSONResponse(502,{"status":"error","code":code,"message":msg})
+        return JSONResponse(
+            status_code=502,
+            content={"status":"error","code":code,"message":msg}
+        )
