@@ -150,9 +150,9 @@ async def extract_youtube_oembed(url: str) -> Optional[Dict[str, Any]]:
                 encoded_url = urllib.parse.quote(url)
 
                 qualities = [
-                    {"label": "720p HD", "height": 720, "downloadUrl": f"/api/download?url={encoded_url}&quality=720p"},
-                    {"label": "480p", "height": 480, "downloadUrl": f"/api/download?url={encoded_url}&quality=480p"},
-                    {"label": "360p", "height": 360, "downloadUrl": f"/api/download?url={encoded_url}&quality=360p"}
+                    {"label": "360p SD", "height": 360, "downloadUrl": f"/api/download?url={encoded_url}&quality=360p"},
+                    {"label": "480p SD", "height": 480, "downloadUrl": f"/api/download?url={encoded_url}&quality=480p"},
+                    {"label": "720p HD", "height": 720, "downloadUrl": f"/api/download?url={encoded_url}&quality=720p"}
                 ]
 
                 return {
@@ -167,7 +167,7 @@ async def extract_youtube_oembed(url: str) -> Optional[Dict[str, Any]]:
                     "fileExt": "mp4",
                     "filename": safe_name,
                     "uploader": author,
-                    "downloadUrl": qualities[0]["downloadUrl"],
+                    "downloadUrl": qualities[-1]["downloadUrl"],
                     "qualities": qualities,
                     "engine": "youtube-oembed"
                 }
@@ -274,9 +274,9 @@ async def get_info(url: str = Query(...)):
 
         std_heights = [144, 360, 480, 720, 1080]
         max_h = max(heights) if heights else 720
-        usable_heights = sorted([h for h in std_heights if h <= max(max_h, 720)], reverse=True)
+        usable_heights = sorted([h for h in std_heights if h <= max(max_h, 720)])
         if not usable_heights:
-            usable_heights = [720, 480, 360]
+            usable_heights = [360, 480, 720]
 
         encoded_url = urllib.parse.quote(url)
         qualities = [
