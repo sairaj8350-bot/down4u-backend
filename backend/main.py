@@ -80,8 +80,12 @@ def _sanitize_title(title: str, max_len: int = 40) -> str:
 async def extract_tiktok(url: str) -> Optional[Dict[str, Any]]:
     """Ultra-fast, 100% free, no-watermark TikTok extraction via TikWM API."""
     try:
+        headers = {
+            "User-Agent": BROWSER_UA,
+            "Accept": "application/json, text/plain, */*",
+        }
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            res = await client.post("https://www.tikwm.com/api/", data={"url": url})
+            res = await client.post("https://www.tikwm.com/api/", data={"url": url}, headers=headers)
             if res.status_code == 200:
                 d = res.json()
                 if d.get("code") == 0 and d.get("data"):
@@ -94,21 +98,21 @@ async def extract_tiktok(url: str) -> Optional[Dict[str, Any]]:
                     size_str = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "HD MP4"
                     safe_name = f"{_sanitize_title(title)}_TikTok.mp4"
 
-                    encoded_url = urllib.parse.quote(url)
-                    encoded_stream = urllib.parse.quote(direct_mp4)
+                    encoded_url = urllib.parse.quote(url, safe="")
+                    encoded_stream = urllib.parse.quote(direct_mp4, safe="")
 
                     qualities = [
                         {
                             "label": "HD No Watermark",
                             "height": 720,
-                            "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name)}"
+                            "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}"
                         }
                     ]
                     if data.get("wmplay"):
                         qualities.append({
                             "label": "Standard (Watermark)",
                             "height": 540,
-                            "downloadUrl": f"/api/download?url={encoded_url}&direct_url={urllib.parse.quote(data['wmplay'])}&filename={urllib.parse.quote(safe_name)}"
+                            "downloadUrl": f"/api/download?url={encoded_url}&direct_url={urllib.parse.quote(data['wmplay'], safe='')}&filename={urllib.parse.quote(safe_name, safe='')}"
                         })
 
                     return {
@@ -352,24 +356,28 @@ async def download_video(
     platform = detect_platform(target_url or "") if target_url else "Web"
     safe_name = filename or f"video_{platform}.mp4"
 
-    # 1. If direct stream URL already provided (e.g. from TikWM)
+    # 1. If direct stream URL already provided (e.g. from TikWM or direct CDN)
     if raw_stream_url:
-        logger.info("Streaming direct stream URL for %s", safe_name)
-        async def _proxy_direct():
-            async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
-                async with client.stream("GET", raw_stream_url, headers={"User-Agent": BROWSER_UA}) as resp:
-                    async for chunk in resp.aiter_bytes(65536):
-                        yield chunk
+        logger.info("Handling direct stream URL for %s", safe_name)
+        try:
+            async def _proxy_direct():
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                    async with client.stream("GET", raw_stream_url, headers={"User-Agent": BROWSER_UA}) as resp:
+                        async for chunk in resp.aiter_bytes(65536):
+                            yield chunk
 
-        return StreamingResponse(
-            _proxy_direct(),
-            media_type="video/mp4",
-            headers={
-                "Content-Disposition": f'attachment; filename="{safe_name}"',
-                "Content-Type": "video/mp4",
-                "Access-Control-Allow-Origin": "*"
-            }
-        )
+            return StreamingResponse(
+                _proxy_direct(),
+                media_type="video/mp4",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{safe_name}"',
+                    "Content-Type": "video/mp4",
+                    "Access-Control-Allow-Origin": "*"
+                }
+            )
+        except Exception as e:
+            logger.warning("Proxy stream failed (%s), redirecting directly to CDN", e)
+            return RedirectResponse(url=raw_stream_url)
 
     if not target_url:
         return JSONResponse(status_code=400, content={"error": "URL is required for download"})
@@ -379,21 +387,25 @@ async def download_video(
         tt = await extract_tiktok(target_url)
         if tt and tt.get("direct_stream_url"):
             d_url = tt["direct_stream_url"]
-            async def _proxy_tt():
-                async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
-                    async with client.stream("GET", d_url, headers={"User-Agent": BROWSER_UA}) as resp:
-                        async for chunk in resp.aiter_bytes(65536):
-                            yield chunk
+            try:
+                async def _proxy_tt():
+                    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                        async with client.stream("GET", d_url, headers={"User-Agent": BROWSER_UA}) as resp:
+                            async for chunk in resp.aiter_bytes(65536):
+                                yield chunk
 
-            return StreamingResponse(
-                _proxy_tt(),
-                media_type="video/mp4",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{safe_name}"',
-                    "Content-Type": "video/mp4",
-                    "Access-Control-Allow-Origin": "*"
-                }
-            )
+                return StreamingResponse(
+                    _proxy_tt(),
+                    media_type="video/mp4",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{safe_name}"',
+                        "Content-Type": "video/mp4",
+                        "Access-Control-Allow-Origin": "*"
+                    }
+                )
+            except Exception as e_tt:
+                logger.warning("TikTok stream proxy failed (%s), redirecting", e_tt)
+                return RedirectResponse(url=d_url)
 
     # 3. Resolve stream URL via yt-dlp
     cf = _write_cookie_file()
