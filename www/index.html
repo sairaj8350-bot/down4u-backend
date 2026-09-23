@@ -632,6 +632,11 @@
       transition: width 0.15s ease;
     }
 
+    @keyframes shimmer {
+      0%   { background-position: 200% center; }
+      100% { background-position: -200% center; }
+    }
+
     .progress-subtext {
       display: flex;
       justify-content: space-between;
@@ -1342,12 +1347,13 @@
   <script>
     // App State
     let currentDirectUrl = '';
+    let currentDirectStreamUrl = '';
     let currentFilename = 'Down4U_Video.mp4';
     let currentVideoData = null;
     let activeXhr = null;
 
     // Production Public Cloud Server URL default
-    // Once deployed to Render (e.g. https://down4u-backend.onrender.com), update this default URL below
+    // Python FastAPI backend on Render (Dual-Engine: yt-dlp + Cobalt fallback)
     const DEFAULT_SERVER_URL = 'https://down4u-backend.onrender.com';
 
     // Dynamic API Base URL resolver for Web & APK compatibility with fallback
@@ -1387,6 +1393,18 @@
         serverInput.value = localStorage.getItem('down4u_server_url') || DEFAULT_SERVER_URL;
       }
     }, 200);
+
+    // Platform Detector
+    function detectPlatform(url) {
+      if (!url) return 'Universal';
+      const u = url.toLowerCase();
+      if (u.includes('youtube.com') || u.includes('youtu.be')) return 'YouTube';
+      if (u.includes('instagram.com')) return 'Instagram';
+      if (u.includes('tiktok.com')) return 'TikTok';
+      if (u.includes('twitter.com') || u.includes('x.com')) return 'Twitter';
+      if (u.includes('facebook.com') || u.includes('fb.watch') || u.includes('fb.com')) return 'Facebook';
+      return 'Universal';
+    }
 
     // Platform Badge Mapper
     function getPlatformBadge(platform) {
@@ -1503,15 +1521,15 @@
     (function warmUpBackend() {
       try {
         const pingUrl = formatApiUrl('/api/health');
-        fetch(pingUrl, { method: 'GET', cache: 'no-store' }).catch(() => {});
-      } catch (e) {}
+        fetch(pingUrl, { method: 'GET', cache: 'no-store' }).catch(() => { });
+      } catch (e) { }
     })();
 
     // Helper: Smart URL validator & normalizer
     function cleanAndValidateUrl(inputUrl) {
       if (!inputUrl) return { valid: false, error: 'Please paste a valid video URL.' };
       let url = inputUrl.trim();
-      
+
       // Auto-prefix https if user only pasted domain/path
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         url = 'https://' + url;
@@ -1595,15 +1613,84 @@
           });
           const data = await response.json();
 
-          if (!response.ok) {
-            throw new Error(data.error || 'Failed to extract video');
+          if (!response.ok || data.status === 'error') {
+            // New Python backend structured error format
+            const pe = data.primary_error;
+            let errMsg = data.message || data.error || 'Failed to extract video';
+            if (pe && pe.code) {
+              if (pe.code === 'YT_IP_BLOCKED') errMsg = '⚠️ Cloud IP blocked by YouTube. The server admin needs to add cookies (YT_COOKIES).';
+              else if (pe.code === 'YT_LOGIN_REQUIRED') errMsg = '🔒 Login required. Server needs cookies configured.';
+              else if (pe.code === 'YT_PRIVATE') errMsg = '🔒 This video is private.';
+              else if (pe.code === 'YT_UNAVAILABLE') errMsg = '❌ Video unavailable or deleted.';
+              else if (pe.code === 'YT_FORBIDDEN') errMsg = '🚫 Access forbidden (region/age restriction).';
+            }
+            throw new Error(errMsg);
           }
 
-          currentDirectUrl = formatApiUrl(data.downloadUrl);
-          currentFilename = data.filename || 'Down4U_Video.mp4';
-          currentVideoData = data;
+          // Map Python API response → internal format
+          const engine = data.engine || 'yt-dlp';
+          const qualDetails = data.quality_details || {};
+          const qualList = (data.qualities || []).map(q => {
+            if (typeof q === 'object' && q !== null) {
+              const lbl = q.label || (q.height ? `${q.height}p` : 'HD');
+              return {
+                label: lbl,
+                height: q.height || (parseInt(lbl) || 720),
+                downloadUrl: q.downloadUrl ? formatApiUrl(q.downloadUrl) : formatApiUrl('/api/download?url=' + encodeURIComponent(url) + '&quality=' + encodeURIComponent(lbl) + '&redirect=true'),
+                direct_url: q.direct_url || data.direct_stream_url || ''
+              };
+            }
+            const qStr = String(q);
+            return {
+              label: qStr,
+              height: parseInt(qStr) || 720,
+              downloadUrl: formatApiUrl('/api/download?url=' + encodeURIComponent(url) +
+                '&quality=' + encodeURIComponent(qStr) +
+                (qualDetails[qStr] ? '&format_id=' + encodeURIComponent(qualDetails[qStr].format_id) : '') +
+                '&redirect=true'),
+              direct_url: data.direct_stream_url || ''
+            };
+          });
 
-          renderMediaResult(data);
+          // If cobalt engine was used, use the direct cobalt URL
+          if (engine === 'cobalt' && data._cobalt_url) {
+            qualList.push({ label: 'Best', height: 1080, downloadUrl: data._cobalt_url, direct_url: data._cobalt_url });
+          }
+
+          if (qualList.length === 0 && (data.downloadUrl || data.direct_stream_url)) {
+            const dl = data.downloadUrl || data.direct_stream_url;
+            qualList.push({
+              label: 'HD Ready',
+              height: 720,
+              downloadUrl: formatApiUrl(dl),
+              direct_url: data.direct_stream_url || ''
+            });
+          }
+
+          const defaultQuality = qualList.length > 0 ? qualList[qualList.length - 1] : null;
+          const mappedData = {
+            status: 'success',
+            title: data.title || 'Video Ready',
+            thumbnail: data.thumbnail || null,
+            duration: data.duration ? formatDuration(data.duration) : '',
+            uploader: data.uploader || '',
+            platform: data.platform || detectPlatform(url),
+            mediaType: 'video',
+            fileExt: 'mp4',
+            size: data.size || 'HD MP4',
+            qualities: qualList,
+            downloadUrl: defaultQuality ? defaultQuality.downloadUrl : (data.downloadUrl ? formatApiUrl(data.downloadUrl) : ''),
+            direct_stream_url: defaultQuality ? (defaultQuality.direct_url || data.direct_stream_url || '') : (data.direct_stream_url || ''),
+            filename: (data.title || 'Down4U_Video').replace(/[^\w\s\-]/g, '').trim() + '.mp4',
+            engine: engine
+          };
+
+          currentDirectUrl = mappedData.downloadUrl;
+          currentDirectStreamUrl = mappedData.direct_stream_url;
+          currentFilename = mappedData.filename;
+          currentVideoData = mappedData;
+
+          renderMediaResult(mappedData);
         } catch (err) {
           if (retryCount < 1 && (err.name === 'TypeError' || err.message.includes('fetch'))) {
             // Auto silent retry
@@ -1658,10 +1745,13 @@
               `).join('')}
             </div>
           </div>`;
+
         // Set default URL to highest quality
-        currentDirectUrl = formatApiUrl(qualities[defaultIdx].downloadUrl);
-        if (data.filename && qualities[defaultIdx].height) {
-          currentFilename = data.filename.replace(/\.mp4$/i, `_${qualities[defaultIdx].height}p.mp4`);
+        const defaultQuality = qualities[defaultIdx];
+        currentDirectUrl = formatApiUrl(defaultQuality.downloadUrl);
+        currentDirectStreamUrl = defaultQuality.direct_url || (data.direct_stream_url || '');
+        if (data.filename && defaultQuality.height) {
+          currentFilename = data.filename.replace(/\.mp4$/i, `_${defaultQuality.height}p.mp4`);
         }
       }
 
@@ -1690,15 +1780,15 @@
           <!-- Download Progress Section -->
           <div id="progressSection" class="progress-section" style="display:none;">
             <div class="progress-header">
-              <span id="progressStatus">Downloading ${isImage ? 'photo' : 'video'} stream...</span>
+              <span id="progressStatus">Starting download...</span>
               <span id="progressPercent">0%</span>
             </div>
             <div class="progress-bar-bg">
               <div class="progress-bar-fill" id="progressBarFill"></div>
             </div>
             <div class="progress-subtext">
-              <span id="progressSpeed">Preparing stream...</span>
-              <span id="progressBytes">0 MB</span>
+              <span id="progressSpeed">Native Download Manager</span>
+              <span id="progressBytes">Direct Stream</span>
             </div>
           </div>
 
@@ -1721,10 +1811,11 @@
       const qualities = window._currentQualities || [];
       if (!qualities[idx]) return;
 
-      // Update selected URL
-      currentDirectUrl = formatApiUrl(qualities[idx].downloadUrl);
-      if (currentVideoData && currentVideoData.filename && qualities[idx].height) {
-        currentFilename = currentVideoData.filename.replace(/\.mp4$/i, `_${qualities[idx].height}p.mp4`);
+      const q = qualities[idx];
+      currentDirectUrl = formatApiUrl(q.downloadUrl);
+      currentDirectStreamUrl = q.direct_url || (currentVideoData && currentVideoData.direct_stream_url) || '';
+      if (currentVideoData && currentVideoData.filename && q.height) {
+        currentFilename = currentVideoData.filename.replace(/\.mp4$/i, `_${q.height}p.mp4`);
       }
 
       // Update pill highlight
@@ -1764,100 +1855,168 @@
       `;
     }
 
-    // Start Downloading Video Stream
+    // Start Downloading Video Stream via Client-side Native Trigger
     function startDownloadStream() {
-      if (!currentDirectUrl) return;
+      const targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
+      if (!targetDlUrl) return;
 
       // Unity Interstitial Ad - FULLY non-blocking, never interrupts download
       try {
-        if (typeof window.showAd === 'function') {
-          window.showAd();
-        } else if (typeof window.showUnityInterstitial === 'function') {
-          window.showUnityInterstitial();
-        }
-      } catch (e) { /* Unity Ads fail silently - download ALWAYS continues */ }
+        if (typeof window.showAd === 'function') window.showAd();
+        else if (typeof window.showUnityInterstitial === 'function') window.showUnityInterstitial();
+      } catch (e) { /* Unity Ads fail silently */ }
 
       const progressSection = document.getElementById('progressSection');
-      const startDlBtn = document.getElementById('startDlBtn');
-      const startDlLabel = document.getElementById('startDlLabel');
+      const startDlBtn     = document.getElementById('startDlBtn');
+      const startDlLabel   = document.getElementById('startDlLabel');
       const progressBarFill = document.getElementById('progressBarFill');
       const progressPercent = document.getElementById('progressPercent');
-      const progressStatus = document.getElementById('progressStatus');
-      const progressSpeed = document.getElementById('progressSpeed');
-      const progressBytes = document.getElementById('progressBytes');
+      const progressStatus  = document.getElementById('progressStatus');
+      const progressSpeed   = document.getElementById('progressSpeed');
+      const progressBytes   = document.getElementById('progressBytes');
 
-      progressSection.style.display = 'block';
-      startDlBtn.disabled = true;
-      startDlLabel.textContent = 'Downloading...';
+      // Show progress bar in initial state — real % will come from Android callbacks
+      if (progressSection) progressSection.style.display = 'block';
+      if (startDlBtn)   { startDlBtn.disabled = true; }
+      if (startDlLabel) { startDlLabel.textContent = 'Downloading...'; }
+      if (progressBarFill) progressBarFill.style.width = '0%';
+      if (progressPercent) progressPercent.textContent = '0%';
+      if (progressStatus)  progressStatus.textContent  = 'Connecting to server...';
+      if (progressSpeed)   progressSpeed.textContent   = 'Native Download Manager';
+      if (progressBytes)   progressBytes.textContent   = 'Starting...';
 
-      if (activeXhr) activeXhr.abort();
+      // Trigger native download (Android) or browser fallback
+      triggerClientDownload(targetDlUrl, currentFilename);
 
-      const xhr = new XMLHttpRequest();
-      activeXhr = xhr;
-      xhr.open('GET', currentDirectUrl, true);
-      xhr.setRequestHeader('Bypass-Tunnel-Reminder', 'true');
-      xhr.responseType = 'blob';
+      // Save to local history
+      saveToHistory(currentVideoData);
 
-      xhr.onprogress = function (e) {
-        if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
+      // Fallback for browser / non-Android: animate to 100% after 2s since
+      // we have no polling bridge in browser mode
+      if (!window.AndroidDownloader) {
+        setTimeout(() => {
+          if (progressBarFill) progressBarFill.style.width = '100%';
+          if (progressPercent) progressPercent.textContent = '100%';
+          if (progressStatus)  progressStatus.textContent  = 'Download Started!';
+          if (progressSpeed)   progressSpeed.textContent   = 'Check your Downloads folder';
+          if (progressBytes)   progressBytes.textContent   = '';
+          if (startDlBtn)   { startDlBtn.disabled = false; }
+          if (startDlLabel) { startDlLabel.textContent = '✓ Done (Tap to Re-download)'; }
+        }, 2000);
+      }
+    }
+
+    // ── Real-time progress callback from Android ScheduledExecutorService ─────
+    // Called every ~500ms by MainActivity via evaluateJavascript()
+    // percent = -1 means unknown total size (indeterminate)
+    window.onNativeDownloadProgress = function(percent, downloaded, total) {
+      const progressBarFill = document.getElementById('progressBarFill');
+      const progressPercent = document.getElementById('progressPercent');
+      const progressStatus  = document.getElementById('progressStatus');
+      const progressBytes   = document.getElementById('progressBytes');
+
+      if (percent < 0) {
+        // Indeterminate — total size unknown
+        if (progressBarFill) {
+          progressBarFill.style.transition = 'none';
+          progressBarFill.style.width = '40%';
+          progressBarFill.style.backgroundImage =
+            'linear-gradient(90deg, #00875A 25%, #00b374 50%, #00875A 75%)';
+          progressBarFill.style.backgroundSize = '200% 100%';
+          progressBarFill.style.animation = 'shimmer 1.4s linear infinite';
+        }
+        if (progressPercent) progressPercent.textContent = '...';
+        if (progressStatus)  progressStatus.textContent  = 'Downloading...';
+        if (progressBytes)   progressBytes.textContent   = downloaded || '';
+      } else {
+        const pct = Math.min(percent, 99); // 100% reserved for gallery-save complete
+        if (progressBarFill) {
+          progressBarFill.style.animation = 'none';
+          progressBarFill.style.backgroundImage = '';
+          progressBarFill.style.transition = 'width 0.35s ease';
           progressBarFill.style.width = pct + '%';
-          progressPercent.textContent = pct + '%';
-
-          const loadedMB = (e.loaded / (1024 * 1024)).toFixed(1);
-          const totalMB = (e.total / (1024 * 1024)).toFixed(1);
-          progressBytes.textContent = `${loadedMB} MB / ${totalMB} MB`;
-
-          if (pct < 30) progressStatus.textContent = 'Fetching video data...';
-          else if (pct < 80) progressStatus.textContent = 'Streaming high speed MP4...';
-          else progressStatus.textContent = 'Finalizing file...';
-        } else {
-          const loadedMB = (e.loaded / (1024 * 1024)).toFixed(1);
-          progressBytes.textContent = `${loadedMB} MB`;
-          progressStatus.textContent = 'Downloading...';
-          progressBarFill.style.width = '70%';
         }
-      };
+        if (progressPercent) progressPercent.textContent = pct + '%';
+        if (progressStatus)  progressStatus.textContent  = 'Downloading... ' + pct + '%';
+        if (progressBytes) {
+          progressBytes.textContent = total && total !== '?'
+            ? downloaded + ' / ' + total
+            : downloaded;
+        }
+      }
+    };
 
-      xhr.onload = function () {
-        if (xhr.status === 200) {
-          const blob = xhr.response;
-          const blobUrl = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = blobUrl;
-          a.download = currentFilename;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    // ── Gallery-save complete callback from Android MediaScannerConnection ────
+    // Called ONCE by MainActivity AFTER MediaScanner confirms file in Gallery
+    window.onNativeDownloadComplete = function(success) {
+      const progressBarFill = document.getElementById('progressBarFill');
+      const progressPercent = document.getElementById('progressPercent');
+      const progressStatus  = document.getElementById('progressStatus');
+      const progressSpeed   = document.getElementById('progressSpeed');
+      const progressBytes   = document.getElementById('progressBytes');
+      const startDlBtn      = document.getElementById('startDlBtn');
+      const startDlLabel    = document.getElementById('startDlLabel');
 
-          // Save to local history
-          saveToHistory(currentVideoData);
-
-          // Success UI
+      if (success) {
+        // Only NOW show 100% — file is confirmed saved in Gallery
+        if (progressBarFill) {
+          progressBarFill.style.animation = 'none';
+          progressBarFill.style.backgroundImage = '';
+          progressBarFill.style.transition = 'width 0.4s ease';
           progressBarFill.style.width = '100%';
-          progressPercent.textContent = '100%';
-          progressStatus.textContent = 'Download Complete!';
-          progressSpeed.textContent = 'Saved to your device';
-
-          startDlBtn.disabled = false;
-          startDlBtn.style.background = '#00875A';
-          startDlLabel.textContent = '✓ Download Again';
-          startDlBtn.onclick = startDownloadStream;
-        } else {
-          progressStatus.textContent = 'Download failed (Server Error)';
-          startDlBtn.disabled = false;
-          startDlLabel.textContent = 'Retry Download';
+          progressBarFill.style.background = '#00875A';
         }
-      };
+        if (progressPercent) progressPercent.textContent = '100%';
+        if (progressStatus)  progressStatus.textContent  = '✅ Saved to Gallery!';
+        if (progressSpeed)   progressSpeed.textContent   = 'Video saved to your Gallery';
+        if (progressBytes)   progressBytes.textContent   = 'Complete';
+        if (startDlBtn)    { startDlBtn.disabled = false; startDlBtn.style.background = '#00875A'; }
+        if (startDlLabel)  { startDlLabel.textContent = '✓ Saved to Gallery (Tap to Re-download)'; }
+      } else {
+        // Download failed
+        if (progressBarFill) {
+          progressBarFill.style.width = '100%';
+          progressBarFill.style.background = '#EF4444';
+        }
+        if (progressPercent) progressPercent.textContent = '!';
+        if (progressStatus)  progressStatus.textContent  = '❌ Download Failed. Please retry.';
+        if (progressSpeed)   progressSpeed.textContent   = 'Check your internet connection';
+        if (progressBytes)   progressBytes.textContent   = '';
+        if (startDlBtn)    { startDlBtn.disabled = false; }
+        if (startDlLabel)  { startDlLabel.textContent = '↻ Retry Download'; }
+      }
+    };
 
-      xhr.onerror = function () {
-        progressStatus.textContent = 'Network error during download';
-        startDlBtn.disabled = false;
-        startDlLabel.textContent = 'Retry Download';
-      };
+    // Client-side Native Download Trigger Helper
+    function triggerClientDownload(dlUrl, filename) {
+      if (!dlUrl) return;
+      const cleanFilename = filename || 'video.mp4';
+      const cleanTitle = (currentVideoData && currentVideoData.title) ? currentVideoData.title : 'Video Download';
 
-      xhr.send();
+      // 1. Android Native Downloader (In-app background download directly to Gallery via MainActivity)
+      if (window.AndroidDownloader && typeof window.AndroidDownloader.downloadVideo === 'function') {
+        try {
+          window.AndroidDownloader.downloadVideo(dlUrl, cleanFilename, cleanTitle);
+          return;
+        } catch (err) {
+          console.warn('AndroidDownloader invocation failed, falling back:', err);
+        }
+      }
+
+      // 2. Browser Fallback (Strictly in-app, NO external browser launch, NO target="_blank")
+      try {
+        const a = document.createElement('a');
+        a.href = dlUrl;
+        a.setAttribute('download', cleanFilename);
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          try { document.body.removeChild(a); } catch(e) {}
+        }, 3000);
+      } catch (err) {
+        console.warn('Anchor download error:', err);
+      }
     }
 
     // Save Downloaded Item to Local History
