@@ -270,6 +270,175 @@ public class MainActivity extends BridgeActivity {
         return s.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "");
     }
 
+    // ── Headless In-App Native Sniffer (Extracts videos directly on user device) ──
+    private WebView headlessWebView;
+    private boolean isSniffing = false;
+
+    private void startHeadlessSniffer(String targetUrl, String defaultTitle) {
+        if (targetUrl == null || targetUrl.trim().isEmpty()) return;
+
+        if (headlessWebView != null) {
+            try {
+                headlessWebView.stopLoading();
+                headlessWebView.destroy();
+            } catch (Exception ignored) {}
+            headlessWebView = null;
+        }
+
+        isSniffing = true;
+        headlessWebView = new WebView(this);
+        android.webkit.WebSettings settings = headlessWebView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36");
+
+        final String cleanTitle = (defaultTitle != null && !defaultTitle.isEmpty()) ? defaultTitle : "Video";
+        final String safeFilename = cleanTitle.replaceAll("[^a-zA-Z0-9_\\-]", "_") + "_" + System.currentTimeMillis() + ".mp4";
+
+        notifyJsSnifferStatus("Connecting direct in-app stream extractor...");
+
+        String loadUrl = targetUrl;
+        if (targetUrl.contains("instagram.com/reel/") || targetUrl.contains("instagram.com/p/") || targetUrl.contains("instagram.com/tv/")) {
+            String shortcode = extractInstagramShortcode(targetUrl);
+            if (shortcode != null) {
+                loadUrl = "https://www.instagram.com/reel/" + shortcode + "/embed/captioned/";
+            }
+        }
+
+        mainHandler.postDelayed(() -> {
+            if (isSniffing && headlessWebView != null) {
+                isSniffing = false;
+                try {
+                    headlessWebView.stopLoading();
+                    headlessWebView.destroy();
+                } catch (Exception ignored) {}
+                headlessWebView = null;
+                notifyJsSnifferFailed("Stream search timed out. Please check your connection.");
+            }
+        }, 18000);
+
+        headlessWebView.setWebViewClient(new android.webkit.WebViewClient() {
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, android.webkit.WebResourceRequest request) {
+                if (!isSniffing) return super.shouldInterceptRequest(view, request);
+                String reqUrl = request.getUrl().toString();
+
+                if (isVideoStreamUrl(reqUrl)) {
+                    isSniffing = false;
+                    mainHandler.post(() -> {
+                        if (headlessWebView != null) {
+                            try {
+                                headlessWebView.stopLoading();
+                                headlessWebView.destroy();
+                            } catch (Exception ignored) {}
+                            headlessWebView = null;
+                        }
+                        notifyJsSnifferSuccess(reqUrl);
+                        startNativeDownload(reqUrl, safeFilename, cleanTitle, "video/mp4");
+                    });
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (!isSniffing) return;
+                view.evaluateJavascript(
+                    "(function() {" +
+                    "  var v = document.querySelector('video');" +
+                    "  if (v && v.src && v.src.indexOf('http') === 0) return v.src;" +
+                    "  var s = document.querySelector('video source');" +
+                    "  if (s && s.src && s.src.indexOf('http') === 0) return s.src;" +
+                    "  return '';" +
+                    "})()",
+                    value -> {
+                        if (value != null && value.length() > 6 && !value.equals("\"\"") && !value.equals("null") && isSniffing) {
+                            String foundUrl = value.replace("\"", "").replace("\\u0026", "&");
+                            if (foundUrl.startsWith("http")) {
+                                isSniffing = false;
+                                mainHandler.post(() -> {
+                                    if (headlessWebView != null) {
+                                        try {
+                                            headlessWebView.stopLoading();
+                                            headlessWebView.destroy();
+                                        } catch (Exception ignored) {}
+                                        headlessWebView = null;
+                                    }
+                                    notifyJsSnifferSuccess(foundUrl);
+                                    startNativeDownload(foundUrl, safeFilename, cleanTitle, "video/mp4");
+                                });
+                            }
+                        }
+                    }
+                );
+            }
+        });
+
+        headlessWebView.loadUrl(loadUrl);
+    }
+
+    private boolean isVideoStreamUrl(String u) {
+        if (u == null) return false;
+        String lower = u.toLowerCase();
+        if (!lower.startsWith("http")) return false;
+
+        if (lower.contains(".mp4") && !lower.contains(".html") && !lower.contains(".js")) {
+            return true;
+        }
+
+        if ((lower.contains("cdninstagram.com") || lower.contains("fbcdn.net")) &&
+            (lower.contains("bytestart") || lower.contains("video") || lower.contains(".mp4") || lower.contains("oe="))) {
+            return true;
+        }
+
+        if (lower.contains("video.twimg.com") && lower.contains(".mp4")) {
+            return true;
+        }
+
+        if (lower.contains("tiktokcdn.com") && lower.contains(".mp4")) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private String extractInstagramShortcode(String url) {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("/(?:reel|reels|p|tv)/([A-Za-z0-9_\\-]+)");
+        java.util.regex.Matcher m = p.matcher(url);
+        if (m.find()) {
+            return m.group(1);
+        }
+        return null;
+    }
+
+    private void notifyJsSnifferStatus(String msg) {
+        mainHandler.post(() -> {
+            WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView == null) return;
+            String js = "if(typeof window.onSnifferStatus==='function') window.onSnifferStatus('" + escapeJs(msg) + "');";
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
+    private void notifyJsSnifferSuccess(String streamUrl) {
+        mainHandler.post(() -> {
+            WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView == null) return;
+            String js = "if(typeof window.onSnifferSuccess==='function') window.onSnifferSuccess('" + escapeJs(streamUrl) + "');";
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
+    private void notifyJsSnifferFailed(String errorMsg) {
+        mainHandler.post(() -> {
+            WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView == null) return;
+            String js = "if(typeof window.onSnifferFailed==='function') window.onSnifferFailed('" + escapeJs(errorMsg) + "');";
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
     // ── Inner Class: JavaScript Interface ────────────────────────────────────
     public class AndroidDownloader {
         private final Context mContext;
@@ -286,6 +455,11 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void downloadMedia(String url, String filename, String title, String mimeType) {
             runOnUiThread(() -> startNativeDownload(url, filename, title, mimeType));
+        }
+
+        @JavascriptInterface
+        public void sniffAndDownload(String targetUrl, String defaultTitle) {
+            runOnUiThread(() -> startHeadlessSniffer(targetUrl, defaultTitle));
         }
 
         @JavascriptInterface

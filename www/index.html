@@ -1696,6 +1696,15 @@
             // Auto silent retry
             setTimeout(() => executeFetch(retryCount + 1), 1200);
           } else {
+            // Automatic Fallback to Native In-App Device Sniffer (bypasses data-center blocks)
+            if (window.AndroidDownloader && typeof window.AndroidDownloader.sniffAndDownload === 'function') {
+              console.log('Server fetch returned error, activating Native Device Sniffer:', url);
+              if (typeof window.onSnifferStatus === 'function') {
+                window.onSnifferStatus('Connecting direct in-app stream extractor...');
+              }
+              window.AndroidDownloader.sniffAndDownload(url, 'Video');
+              return;
+            }
             renderErrorResult(err.message || 'Could not connect to video server. Please check your internet.');
           }
         } finally {
@@ -1985,6 +1994,57 @@
         if (startDlBtn)    { startDlBtn.disabled = false; }
         if (startDlLabel)  { startDlLabel.textContent = '↻ Retry Download'; }
       }
+    };
+
+    // ── Headless In-App Native Sniffer Callbacks ──────────────────────────────
+    window.onSnifferStatus = function(msg) {
+      const contentArea = document.getElementById('mediaContentArea');
+      if (!contentArea) return;
+      contentArea.innerHTML = `
+        <div class="result-card">
+          <div class="state-loading">
+            <div class="spinner"></div>
+            <div class="loading-title">Direct In-App Extraction</div>
+            <div class="loading-desc">${escapeHtml(msg || 'Extracting video directly on device...')}</div>
+          </div>
+        </div>
+      `;
+    };
+
+    window.onSnifferSuccess = function(streamUrl) {
+      console.log('Native sniffer captured stream:', streamUrl);
+      const isInstagram = streamUrl.includes('cdninstagram') || streamUrl.includes('fbcdn');
+      const platformName = isInstagram ? 'Instagram' : 'Video';
+      const cleanTitle = platformName + ' Reel';
+      const mapped = {
+        status: 'success',
+        title: cleanTitle,
+        platform: platformName,
+        mediaType: 'video',
+        fileExt: 'mp4',
+        size: 'HD MP4',
+        qualities: [
+          { label: 'HD Direct', height: 720, downloadUrl: streamUrl, direct_url: streamUrl }
+        ],
+        downloadUrl: streamUrl,
+        direct_stream_url: streamUrl,
+        filename: platformName + '_' + Date.now() + '.mp4'
+      };
+
+      currentDirectUrl = streamUrl;
+      currentDirectStreamUrl = streamUrl;
+      currentFilename = mapped.filename;
+      currentVideoData = mapped;
+
+      renderMediaResult(mapped);
+      // Automatically trigger the real-time progress card & download
+      setTimeout(() => {
+        startDownloadStream();
+      }, 300);
+    };
+
+    window.onSnifferFailed = function(errorMsg) {
+      renderErrorResult(errorMsg || 'Could not extract video stream. Please check link.');
     };
 
     // Client-side Native Download Trigger Helper
