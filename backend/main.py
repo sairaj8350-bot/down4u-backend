@@ -273,43 +273,43 @@ async def extract_instagram(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-# ─── Twitter/X Direct Syndication CDN Engine ─────────────────────────────────
+# ─── Twitter/X Direct FxTwitter + Syndication CDN Engine ─────────────────────
 async def extract_twitter(url: str) -> Optional[Dict[str, Any]]:
-    """Extracts Twitter/X videos via Twitter Syndication API without login/token."""
+    """Extracts Twitter/X videos via FxTwitter API and Syndication API without login."""
     try:
         match = re.search(r"/status/(\d+)", url)
         if not match:
             return None
         tweet_id = match.group(1)
-        api_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&lang=en"
 
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             ),
-            "Accept": "*/*",
+            "Accept": "application/json",
             "Referer": "https://platform.twitter.com/",
         }
 
+        # 1. Primary Engine: FxTwitter API (Super fast, reliable, direct MP4 stream)
+        fx_url = f"https://api.fxtwitter.com/status/{tweet_id}"
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            res = await client.get(api_url, headers=headers)
-            if res.status_code == 200:
-                data = res.json()
-                media_list = data.get("mediaDetails") or []
-                text = data.get("text") or f"Twitter_Video_{tweet_id}"
-                user = data.get("user", {}).get("name") or "Twitter"
-
-                for media in media_list:
-                    if media.get("type") == "video":
-                        variants = media.get("video_info", {}).get("variants") or []
-                        mp4_variants = [v for v in variants if v.get("content_type") == "video/mp4"]
-                        if mp4_variants:
-                            # Sort by bitrate highest first
-                            mp4_variants.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
-                            best = mp4_variants[0]
-                            best_url = best["url"]
-                            thumb = media.get("media_url_https") or ""
+            try:
+                res_fx = await client.get(fx_url, headers=headers)
+                if res_fx.status_code == 200:
+                    d_fx = res_fx.json()
+                    tweet = d_fx.get("tweet") or {}
+                    media = tweet.get("media") or {}
+                    videos = media.get("videos") or []
+                    if not videos and media.get("all"):
+                        videos = [m for m in media.get("all", []) if m.get("type") in ("video", "gif")]
+                    if videos:
+                        best_vid = videos[0]
+                        best_url = best_vid.get("url")
+                        if best_url:
+                            thumb = best_vid.get("thumbnail_url") or ""
+                            text = tweet.get("text") or f"Twitter_Video_{tweet_id}"
+                            user = tweet.get("author", {}).get("name") or "Twitter"
                             safe_name = f"{_sanitize_title(text, 35)}_Twitter.mp4"
 
                             encoded_url = urllib.parse.quote(url, safe="")
@@ -317,7 +317,7 @@ async def extract_twitter(url: str) -> Optional[Dict[str, Any]]:
 
                             qualities = [
                                 {
-                                    "label": "HD 720p (Direct CDN)",
+                                    "label": "HD MP4 (Direct CDN)",
                                     "height": 720,
                                     "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
                                     "direct_url": best_url
@@ -339,8 +339,62 @@ async def extract_twitter(url: str) -> Optional[Dict[str, Any]]:
                                 "downloadUrl": qualities[0]["downloadUrl"],
                                 "qualities": qualities,
                                 "direct_stream_url": best_url,
-                                "engine": "twitter-syndication"
+                                "engine": "fxtwitter-direct"
                             }
+            except Exception as e_fx:
+                logger.warning("FxTwitter extraction error: %s", e_fx)
+
+        # 2. Secondary Engine: Syndication API Fallback
+        api_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&lang=en"
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            res = await client.get(api_url, headers=headers)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, dict):
+                    media_list = data.get("mediaDetails") or []
+                    text = data.get("text") or f"Twitter_Video_{tweet_id}"
+                    user = data.get("user", {}).get("name") or "Twitter"
+
+                    for media in media_list:
+                        if media.get("type") == "video":
+                            variants = media.get("video_info", {}).get("variants") or []
+                            mp4_variants = [v for v in variants if v.get("content_type") == "video/mp4"]
+                            if mp4_variants:
+                                mp4_variants.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                                best = mp4_variants[0]
+                                best_url = best["url"]
+                                thumb = media.get("media_url_https") or ""
+                                safe_name = f"{_sanitize_title(text, 35)}_Twitter.mp4"
+
+                                encoded_url = urllib.parse.quote(url, safe="")
+                                encoded_stream = urllib.parse.quote(best_url, safe="")
+
+                                qualities = [
+                                    {
+                                        "label": "HD 720p (Direct CDN)",
+                                        "height": 720,
+                                        "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
+                                        "direct_url": best_url
+                                    }
+                                ]
+
+                                return {
+                                    "success": True,
+                                    "status": "success",
+                                    "platform": "Twitter",
+                                    "title": text,
+                                    "thumbnail": thumb,
+                                    "duration": "",
+                                    "size": "HD MP4",
+                                    "mediaType": "video",
+                                    "fileExt": "mp4",
+                                    "filename": safe_name,
+                                    "uploader": user,
+                                    "downloadUrl": qualities[0]["downloadUrl"],
+                                    "qualities": qualities,
+                                    "direct_stream_url": best_url,
+                                    "engine": "twitter-syndication"
+                                }
     except Exception as e:
         logger.warning("Twitter syndication extraction error: %s", e)
     return None
@@ -438,7 +492,7 @@ def extract_ytdlp(url: str, platform: str, cookie_file: Optional[str] = None) ->
         # TikTok works best with mobile UA via yt-dlp fallback
         opts["http_headers"]["User-Agent"] = MOBILE_UA
     elif platform == "Twitter":
-        opts["extractor_args"] = {"twitter": {"api": ["graphql"]}}
+        opts["http_headers"]["Referer"] = "https://platform.twitter.com/"
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -544,69 +598,73 @@ async def get_info(url: str = Query(...)):
         ytdlp_error = str(ytdlp_result)
         logger.warning("yt-dlp extraction failed for %s: %s", platform, ytdlp_result)
     elif ytdlp_result:
-        info = ytdlp_result
-        title = info.get("title") or f"{platform} Video"
-        thumbnail = info.get("thumbnail") or ""
-        duration_sec = info.get("duration") or 0
-        duration_str = _format_duration(duration_sec)
-        safe_name = f"{_sanitize_title(title)}_{platform}.mp4"
+        try:
+            info = ytdlp_result
+            title = info.get("title") or f"{platform} Video"
+            thumbnail = info.get("thumbnail") or ""
+            duration_sec = info.get("duration") or 0
+            duration_str = _format_duration(duration_sec)
+            safe_name = f"{_sanitize_title(title)}_{platform}.mp4"
 
-        formats = info.get("formats") or []
-        heights = set()
-        for f in formats:
-            h = f.get("height")
-            if isinstance(h, int) and h > 0:
-                heights.add(h)
+            formats = info.get("formats") or []
+            heights = set()
+            for f in formats:
+                h = f.get("height")
+                if isinstance(h, int) and h > 0:
+                    heights.add(h)
 
-        std_heights = [144, 360, 480, 720, 1080]
-        max_h = max(heights) if heights else 720
-        usable_heights = sorted([h for h in std_heights if h <= max(max_h, 720)])
-        if not usable_heights:
-            usable_heights = [360, 480, 720]
+            std_heights = [144, 360, 480, 720, 1080]
+            max_h = max(heights) if heights else 720
+            usable_heights = sorted([h for h in std_heights if h <= max(max_h, 720)])
+            if not usable_heights:
+                usable_heights = [360, 480, 720]
 
-        stream_url = info.get("url")
-        rf = info.get("requested_formats")
-        if rf and isinstance(rf, list) and len(rf) > 0:
-            stream_url = rf[0].get("url") or stream_url
+            stream_url = info.get("url")
+            rf = info.get("requested_formats")
+            if rf and isinstance(rf, list) and len(rf) > 0:
+                stream_url = rf[0].get("url") or stream_url
 
-        size_bytes = info.get("filesize") or info.get("filesize_approx") or 0
-        size_str = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "HD MP4"
+            size_bytes = info.get("filesize") or info.get("filesize_approx") or 0
+            size_str = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "HD MP4"
 
-        encoded_url = urllib.parse.quote(url)
-        qualities = []
-        for h in usable_heights:
-            f_match = next(
-                (f for f in formats if f.get("height") == h and f.get("url")
-                 and f.get("vcodec") != "none" and f.get("acodec") != "none"), None
-            )
-            if not f_match:
-                f_match = next((f for f in formats if f.get("height") == h and f.get("url")), None)
-            d_url = f_match.get("url") if f_match else (stream_url or "")
-            qualities.append({
-                "label": f"{h}p {'Full HD' if h >= 1080 else 'HD' if h >= 720 else 'SD'}",
-                "height": h,
-                "downloadUrl": f"/api/download?url={encoded_url}&quality={h}p"
-                               f"&filename={urllib.parse.quote(safe_name)}"
-                               + (f"&direct_url={urllib.parse.quote(d_url, safe='')}" if d_url else ""),
-                "direct_url": d_url
+            encoded_url = urllib.parse.quote(url)
+            qualities = []
+            for h in usable_heights:
+                f_match = next(
+                    (f for f in formats if f.get("height") == h and f.get("url")
+                     and f.get("vcodec") != "none" and f.get("acodec") != "none"), None
+                )
+                if not f_match:
+                    f_match = next((f for f in formats if f.get("height") == h and f.get("url")), None)
+                d_url = f_match.get("url") if f_match else (stream_url or "")
+                qualities.append({
+                    "label": f"{h}p {'Full HD' if h >= 1080 else 'HD' if h >= 720 else 'SD'}",
+                    "height": h,
+                    "downloadUrl": f"/api/download?url={encoded_url}&quality={h}p"
+                                   f"&filename={urllib.parse.quote(safe_name)}"
+                                   + (f"&direct_url={urllib.parse.quote(d_url, safe='')}" if d_url else ""),
+                    "direct_url": d_url
+                })
+
+            return JSONResponse(content={
+                "success": True,
+                "status": "success",
+                "platform": platform,
+                "title": title,
+                "thumbnail": thumbnail,
+                "duration": duration_str,
+                "size": size_str,
+                "mediaType": "video",
+                "fileExt": "mp4",
+                "filename": safe_name,
+                "downloadUrl": qualities[0]["downloadUrl"] if qualities else "",
+                "qualities": qualities,
+                "direct_stream_url": stream_url,
+                "engine": "yt-dlp"
             })
-
-        return JSONResponse(content={
-            "success": True,
-            "status": "success",
-            "platform": platform,
-            "title": title,
-            "thumbnail": thumbnail,
-            "duration": duration_str,
-            "size": size_str,
-            "mediaType": "video",
-            "fileExt": "mp4",
-            "filename": safe_name,
-            "downloadUrl": qualities[0]["downloadUrl"] if qualities else "",
-            "qualities": qualities,
-            "direct_stream_url": stream_url,
-            "engine": "yt-dlp"
-        })
+        except Exception as parse_err:
+            ytdlp_error = str(parse_err)
+            logger.warning("Error parsing yt-dlp result for %s: %s", platform, parse_err)
 
     # oEmbed fallback (ran in parallel, already done)
     if oembed_result:
