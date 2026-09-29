@@ -149,8 +149,223 @@ async def extract_tiktok(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-# ─── YouTube oEmbed Fallback ─────────────────────────────────────────────────
+# ─── YouTube Video ID extractor ──────────────────────────────────────────────
+def _extract_youtube_id(url: str) -> Optional[str]:
+    """Extract YouTube video ID from any YouTube URL format."""
+    patterns = [
+        r'(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})',
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+# ─── YouTube Piped API Engine ─────────────────────────────────────────────────
+# Piped is an open-source YouTube proxy. Its stream URLs work from ANY IP.
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.tokhmi.xyz",
+    "https://pipedapi.moomoo.me",
+    "https://pipedapi.in.projectsegfau.lt",
+]
+
+async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
+    """Try multiple Piped API instances. Returns streamable MP4 URLs portable across IPs."""
+    vid_id = _extract_youtube_id(url)
+    if not vid_id:
+        return None
+
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        for instance in PIPED_INSTANCES:
+            try:
+                r = await client.get(
+                    f"{instance}/streams/{vid_id}",
+                    headers={"User-Agent": BROWSER_UA, "Accept": "application/json"}
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                title = data.get("title") or "YouTube Video"
+                thumb = data.get("thumbnailUrl") or f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
+                uploader = data.get("uploader") or "YouTube"
+                duration_sec = data.get("duration") or 0
+                safe_name = f"{_sanitize_title(title)}_YouTube.mp4"
+                encoded_url = urllib.parse.quote(url, safe="")
+
+                # Collect video streams with audio (muxed) or best video+audio
+                video_streams = data.get("videoStreams") or []
+                audio_streams = data.get("audioStreams") or []
+
+                # Filter muxed streams (have both video+audio)
+                muxed = [s for s in video_streams if s.get("videoOnly") is False]
+                if not muxed:
+                    muxed = video_streams  # fallback: take all
+
+                # Sort by quality descending
+                muxed.sort(key=lambda s: s.get("quality", "").replace("p", "").split(" ")[0] or "0", reverse=True)
+
+                qualities = []
+                seen_heights = set()
+                for stream in muxed:
+                    stream_url = stream.get("url")
+                    if not stream_url:
+                        continue
+                    q_label = stream.get("quality") or "720p"
+                    try:
+                        h = int(q_label.replace("p", "").split(" ")[0])
+                    except Exception:
+                        h = 720
+                    if h in seen_heights:
+                        continue
+                    seen_heights.add(h)
+                    encoded_stream = urllib.parse.quote(stream_url, safe="")
+                    # ALWAYS use proxy (redirect=false) — Piped URLs may be instance-bound
+                    dl_url = (
+                        f"/api/download?url={encoded_url}"
+                        f"&direct_url={encoded_stream}"
+                        f"&filename={urllib.parse.quote(safe_name, safe='')}"
+                        f"&redirect=false"
+                    )
+                    qualities.append({
+                        "label": f"{h}p {'HD' if h >= 720 else 'SD'}",
+                        "height": h,
+                        "downloadUrl": dl_url,
+                        "direct_url": stream_url
+                    })
+                    if len(qualities) >= 4:
+                        break
+
+                if not qualities:
+                    continue  # try next instance
+
+                # Best quality = highest resolution
+                best_stream = muxed[0].get("url") if muxed else None
+
+                logger.info("YouTube extracted via Piped instance: %s (video_id=%s)", instance, vid_id)
+                return {
+                    "success": True,
+                    "status": "success",
+                    "platform": "YouTube",
+                    "title": title,
+                    "thumbnail": thumb,
+                    "duration": _format_duration(duration_sec),
+                    "size": "HD MP4",
+                    "mediaType": "video",
+                    "fileExt": "mp4",
+                    "filename": safe_name,
+                    "uploader": uploader,
+                    "downloadUrl": qualities[0]["downloadUrl"],
+                    "qualities": qualities,
+                    "direct_stream_url": best_stream,
+                    "engine": "youtube-piped"
+                }
+            except Exception as e:
+                logger.warning("Piped instance %s failed: %s", instance, e)
+                continue
+    return None
+
+
+# ─── YouTube Invidious API Engine ─────────────────────────────────────────────
+INVIDIOUS_INSTANCES = [
+    "https://invidious.privacydev.net",
+    "https://inv.nadeko.net",
+    "https://invidious.fdn.fr",
+]
+
+async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
+    """Try Invidious API instances as secondary YouTube engine."""
+    vid_id = _extract_youtube_id(url)
+    if not vid_id:
+        return None
+
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                r = await client.get(
+                    f"{instance}/api/v1/videos/{vid_id}?fields=title,author,lengthSeconds,videoThumbnails,adaptiveFormats,formatStreams",
+                    headers={"User-Agent": BROWSER_UA, "Accept": "application/json"}
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                title = data.get("title") or "YouTube Video"
+                uploader = data.get("author") or "YouTube"
+                duration_sec = data.get("lengthSeconds") or 0
+                thumbs = data.get("videoThumbnails") or []
+                thumb = next((t["url"] for t in thumbs if t.get("quality") == "maxres"), "")
+                if not thumb and thumbs:
+                    thumb = thumbs[0].get("url", "")
+                safe_name = f"{_sanitize_title(title)}_YouTube.mp4"
+                encoded_url = urllib.parse.quote(url, safe="")
+
+                # formatStreams = muxed mp4 streams (best for direct download)
+                streams = data.get("formatStreams") or []
+                streams.sort(key=lambda s: int(s.get("resolution", "0p").replace("p", "") or "0"), reverse=True)
+
+                qualities = []
+                seen_heights = set()
+                for stream in streams:
+                    stream_url = stream.get("url")
+                    if not stream_url:
+                        continue
+                    res = stream.get("resolution") or "720p"
+                    try:
+                        h = int(res.replace("p", ""))
+                    except Exception:
+                        h = 720
+                    if h in seen_heights:
+                        continue
+                    seen_heights.add(h)
+                    # Rewrite Invidious stream URL to use the same instance
+                    encoded_stream = urllib.parse.quote(stream_url, safe="")
+                    dl_url = (
+                        f"/api/download?url={encoded_url}"
+                        f"&direct_url={encoded_stream}"
+                        f"&filename={urllib.parse.quote(safe_name, safe='')}"
+                        f"&redirect=false"
+                    )
+                    qualities.append({
+                        "label": f"{h}p {'HD' if h >= 720 else 'SD'}",
+                        "height": h,
+                        "downloadUrl": dl_url,
+                        "direct_url": stream_url
+                    })
+                    if len(qualities) >= 4:
+                        break
+
+                if not qualities:
+                    continue
+
+                best_stream = streams[0].get("url") if streams else None
+                logger.info("YouTube extracted via Invidious instance: %s (video_id=%s)", instance, vid_id)
+                return {
+                    "success": True,
+                    "status": "success",
+                    "platform": "YouTube",
+                    "title": title,
+                    "thumbnail": thumb,
+                    "duration": _format_duration(duration_sec),
+                    "size": "HD MP4",
+                    "mediaType": "video",
+                    "fileExt": "mp4",
+                    "filename": safe_name,
+                    "uploader": uploader,
+                    "downloadUrl": qualities[0]["downloadUrl"],
+                    "qualities": qualities,
+                    "direct_stream_url": best_stream,
+                    "engine": "youtube-invidious"
+                }
+            except Exception as e:
+                logger.warning("Invidious instance %s failed: %s", instance, e)
+                continue
+    return None
+
+
+# ─── YouTube oEmbed Fallback (metadata only, proxy download) ─────────────────
 async def extract_youtube_oembed(url: str) -> Optional[Dict[str, Any]]:
+    """Last-resort: get title/thumb from oEmbed, download via server-side yt-dlp proxy."""
     try:
         async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
             r = await client.get(f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json")
@@ -162,10 +377,16 @@ async def extract_youtube_oembed(url: str) -> Optional[Dict[str, Any]]:
                 safe_name = f"{_sanitize_title(title)}_YouTube.mp4"
                 encoded_url = urllib.parse.quote(url)
 
+                # CRITICAL: redirect=false forces server-side proxy
+                # This means Render proxies the YouTube CDN stream → phone never
+                # touches the IP-bound CDN URL directly (avoids 403)
                 qualities = [
-                    {"label": "360p SD", "height": 360, "downloadUrl": f"/api/download?url={encoded_url}&quality=360p"},
-                    {"label": "480p SD", "height": 480, "downloadUrl": f"/api/download?url={encoded_url}&quality=480p"},
-                    {"label": "720p HD", "height": 720, "downloadUrl": f"/api/download?url={encoded_url}&quality=720p"}
+                    {"label": "360p SD", "height": 360,
+                     "downloadUrl": f"/api/download?url={encoded_url}&quality=360p&redirect=false"},
+                    {"label": "480p SD", "height": 480,
+                     "downloadUrl": f"/api/download?url={encoded_url}&quality=480p&redirect=false"},
+                    {"label": "720p HD", "height": 720,
+                     "downloadUrl": f"/api/download?url={encoded_url}&quality=720p&redirect=false"}
                 ]
 
                 return {
@@ -574,8 +795,7 @@ async def get_info(url: str = Query(...)):
             logger.info("Facebook extracted via public scraper in fast path")
             return JSONResponse(content=fb_res)
 
-    # ── PARALLEL PATH: yt-dlp + oEmbed simultaneously for YouTube/Web/fallbacks ─
-    # asyncio.gather runs both at the same time — faster than sequential
+    # ── PARALLEL PATH: yt-dlp + Piped/Invidious/oEmbed for YouTube/Web/fallbacks ─
     cf = _write_cookie_file()
     ytdlp_error = None
 
@@ -585,13 +805,23 @@ async def get_info(url: str = Query(...)):
         except Exception as e:
             return e
 
-    async def _run_oembed():
-        if platform == "YouTube":
-            return await extract_youtube_oembed(url)
-        return None
+    async def _run_yt_alternatives():
+        """For YouTube: try Piped → Invidious → oEmbed in sequence."""
+        if platform != "YouTube":
+            return None
+        # Try Piped first (fastest, most instances)
+        piped = await extract_youtube_piped(url)
+        if piped:
+            return piped
+        # Try Invidious second
+        invidious = await extract_youtube_invidious(url)
+        if invidious:
+            return invidious
+        # Last resort: oEmbed (metadata only, proxy download via yt-dlp path-6)
+        return await extract_youtube_oembed(url)
 
-    # Run yt-dlp and oEmbed in parallel
-    ytdlp_result, oembed_result = await asyncio.gather(_run_ytdlp(), _run_oembed())
+    # Run yt-dlp and YouTube alternatives in parallel
+    ytdlp_result, oembed_result = await asyncio.gather(_run_ytdlp(), _run_yt_alternatives())
 
     # Process yt-dlp result
     if isinstance(ytdlp_result, Exception):
@@ -705,31 +935,59 @@ async def download_video(
     safe_name = filename or f"video_{platform}.mp4"
 
     # ── FAST PATH: direct_url already known — immediately redirect, no extractor ──
-    # This is the normal path for TikTok, Instagram, Twitter, Facebook, and any
-    # platform where /api/info already resolved the CDN URL and embedded it.
     if raw_stream_url:
-        logger.info("[FAST] Direct CDN redirect for %s platform=%s", safe_name, platform)
-        if redirect:
+        logger.info("[FAST] Direct CDN stream for %s platform=%s", safe_name, platform)
+        is_youtube_stream = platform == "YouTube" or "googlevideo.com" in raw_stream_url
+        if redirect and not is_youtube_stream:
             return RedirectResponse(url=raw_stream_url, status_code=302)
-        # Proxy mode (non-redirect)
+        # Proxy mode (non-redirect) - Essential for YouTube to prevent 403 on Android
         try:
-            async def _proxy_direct():
-                async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
-                    async with client.stream(
-                        "GET", raw_stream_url,
-                        headers={"User-Agent": BROWSER_UA, "Accept": "video/mp4,video/*;q=0.9,*/*"}
-                    ) as resp:
-                        async for chunk in resp.aiter_bytes(131072):  # 128KB chunks for speed
-                            yield chunk
-            return StreamingResponse(
-                _proxy_direct(),
-                media_type="video/mp4",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{safe_name}"',
-                    "Content-Type": "video/mp4",
-                    "Access-Control-Allow-Origin": "*"
-                }
-            )
+            proxy_headers = {
+                "User-Agent": BROWSER_UA,
+                "Accept": "*/*",
+                "Accept-Encoding": "identity",
+                "Connection": "keep-alive"
+            }
+            if is_youtube_stream:
+                proxy_headers["User-Agent"] = "com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip"
+            elif "cdninstagram.com" in raw_stream_url or "fbcdn.net" in raw_stream_url:
+                proxy_headers["Referer"] = "https://www.instagram.com/"
+            elif "twimg.com" in raw_stream_url:
+                proxy_headers["Referer"] = "https://twitter.com/"
+            elif "tiktokcdn.com" in raw_stream_url:
+                proxy_headers["Referer"] = "https://www.tiktok.com/"
+
+            proxy_client = httpx.AsyncClient(timeout=120.0, follow_redirects=True)
+            proxy_req = proxy_client.build_request("GET", raw_stream_url, headers=proxy_headers)
+            proxy_resp = await proxy_client.send(proxy_req, stream=True)
+
+            if proxy_resp.status_code >= 400:
+                await proxy_resp.aclose()
+                await proxy_client.aclose()
+                logger.warning("Upstream direct stream failed with HTTP %d, falling back to redirect", proxy_resp.status_code)
+                return RedirectResponse(url=raw_stream_url, status_code=302)
+
+            cl = proxy_resp.headers.get("content-length")
+            ct = proxy_resp.headers.get("content-type") or "video/mp4"
+
+            async def _proxy_streamer():
+                try:
+                    async for chunk in proxy_resp.aiter_bytes(131072):
+                        yield chunk
+                finally:
+                    await proxy_resp.aclose()
+                    await proxy_client.aclose()
+
+            resp_hdrs = {
+                "Content-Disposition": f'attachment; filename="{safe_name}"',
+                "Content-Type": ct,
+                "Access-Control-Allow-Origin": "*",
+                "Accept-Ranges": "bytes"
+            }
+            if cl:
+                resp_hdrs["Content-Length"] = cl
+
+            return StreamingResponse(_proxy_streamer(), media_type=ct, headers=resp_hdrs)
         except Exception as e:
             logger.warning("Proxy stream failed (%s), falling back to redirect", e)
             return RedirectResponse(url=raw_stream_url, status_code=302)
@@ -883,23 +1141,57 @@ async def download_video(
         logger.error("Download extraction failed for %s: %s", target_url, e)
 
     if stream_url:
-        if redirect:
+        # CRITICAL: YouTube CDN URLs (googlevideo.com) are IP-bound.
+        # The URL was extracted on Render's server IP. If we redirect the Android
+        # phone to this URL, YouTube returns 403 (IP mismatch).
+        # FIX: Always proxy YouTube streams server-side. For other platforms,
+        # respect the `redirect` param as before.
+        should_redirect = redirect and platform != "YouTube"
+        if should_redirect:
             return RedirectResponse(url=stream_url, status_code=302)
-        async def _proxy_stream():
-            async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
-                async with client.stream("GET", stream_url, headers={"User-Agent": BROWSER_UA}) as resp:
-                    async for chunk in resp.aiter_bytes(65536):
-                        yield chunk
 
-        return StreamingResponse(
-            _proxy_stream(),
-            media_type="video/mp4",
-            headers={
+        # Proxy the stream — server fetches bytes, sends to phone
+        yt_headers = {
+            "User-Agent": "com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip",
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Connection": "keep-alive",
+        } if platform == "YouTube" else {"User-Agent": BROWSER_UA, "Accept": "*/*"}
+
+        try:
+            p6_client = httpx.AsyncClient(timeout=180.0, follow_redirects=True)
+            p6_req = p6_client.build_request("GET", stream_url, headers=yt_headers)
+            p6_resp = await p6_client.send(p6_req, stream=True)
+
+            if p6_resp.status_code >= 400:
+                await p6_resp.aclose()
+                await p6_client.aclose()
+                return RedirectResponse(url=stream_url, status_code=302)
+
+            cl6 = p6_resp.headers.get("content-length")
+            ct6 = p6_resp.headers.get("content-type") or "video/mp4"
+
+            async def _p6_streamer():
+                try:
+                    async for chunk in p6_resp.aiter_bytes(131072):
+                        yield chunk
+                finally:
+                    await p6_resp.aclose()
+                    await p6_client.aclose()
+
+            resp_hdrs6 = {
                 "Content-Disposition": f'attachment; filename="{safe_name}"',
-                "Content-Type": "video/mp4",
-                "Access-Control-Allow-Origin": "*"
+                "Content-Type": ct6,
+                "Access-Control-Allow-Origin": "*",
+                "Accept-Ranges": "bytes"
             }
-        )
+            if cl6:
+                resp_hdrs6["Content-Length"] = cl6
+
+            return StreamingResponse(_p6_streamer(), media_type=ct6, headers=resp_hdrs6)
+        except Exception as p6_err:
+            logger.warning("Path 6 stream failed (%s), redirecting", p6_err)
+            return RedirectResponse(url=stream_url, status_code=302)
 
     return JSONResponse(
         status_code=502,

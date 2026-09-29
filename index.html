@@ -1866,7 +1866,12 @@
 
     // Start Downloading Video Stream via Client-side Native Trigger
     function startDownloadStream() {
-      const targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
+      // For YouTube, googlevideo.com URLs are IP-bound to server. Must use currentDirectUrl (proxy endpoint)
+      let targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
+      const isYouTube = (currentVideoData && currentVideoData.platform === 'YouTube') || (targetDlUrl && targetDlUrl.includes('googlevideo.com'));
+      if (isYouTube && currentDirectUrl) {
+        targetDlUrl = currentDirectUrl;
+      }
       if (!targetDlUrl) return;
 
       // Unity Interstitial Ad - FULLY non-blocking, never interrupts download

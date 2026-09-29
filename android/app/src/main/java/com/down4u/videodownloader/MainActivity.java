@@ -1,11 +1,9 @@
 package com.down4u.videodownloader;
 
-import android.app.DownloadManager;
-import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.database.Cursor;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -13,6 +11,8 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
+import android.util.Log;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
@@ -20,26 +20,39 @@ import android.widget.Toast;
 
 import com.getcapacitor.BridgeActivity;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 public class MainActivity extends BridgeActivity {
 
-    private BroadcastReceiver onDownloadCompleteReceiver;
-
-    // Real-time progress polling
-    private ScheduledExecutorService progressScheduler;
-    private ScheduledFuture<?> progressFuture;
-    private long activeDownloadId = -1;
+    private static final String TAG = "Down4U_Downloader";
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService downloadExecutor = Executors.newSingleThreadExecutor();
+    private OkHttpClient okHttpClient;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        progressScheduler = Executors.newSingleThreadScheduledExecutor();
+        // Initialize OkHttp client with optimized timeouts and redirect handling
+        okHttpClient = new OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build();
 
         // Access WebView from Capacitor Bridge
         WebView webView = getBridge().getWebView();
@@ -47,191 +60,185 @@ public class MainActivity extends BridgeActivity {
             // Register AndroidDownloader JavascriptInterface
             webView.addJavascriptInterface(new AndroidDownloader(this), "AndroidDownloader");
 
-            // Intercept any WebView download requests to prevent external browser from opening
+            // Intercept any internal WebView download requests
             webView.setDownloadListener(new DownloadListener() {
                 @Override
                 public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-                    startNativeDownload(url, "video_" + System.currentTimeMillis() + ".mp4", "Video Download", mimetype);
+                    startNativeOkHttpDownload(url, "video_" + System.currentTimeMillis() + ".mp4", "Video Download", mimetype);
                 }
             });
-        }
-
-        // BroadcastReceiver: DownloadManager complete → MediaScanner → notify JS with true 100%
-        onDownloadCompleteReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                if (id == -1 || id != activeDownloadId) return;
-
-                stopProgressPolling();
-
-                DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                DownloadManager.Query query = new DownloadManager.Query();
-                query.setFilterById(id);
-
-                try (Cursor cursor = dm.query(query)) {
-                    if (cursor != null && cursor.moveToFirst()) {
-                        int statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
-                        int status = (statusIndex != -1) ? cursor.getInt(statusIndex) : -1;
-
-                        if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                            int uriIndex = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
-                            String localUriString = (uriIndex != -1) ? cursor.getString(uriIndex) : null;
-
-                            if (localUriString != null) {
-                                Uri fileUri = Uri.parse(localUriString);
-                                String filePath = fileUri.getPath();
-                                if (filePath != null) {
-                                    // Scan file into Gallery, THEN notify JS of 100%
-                                    MediaScannerConnection.scanFile(
-                                        context,
-                                        new String[]{filePath},
-                                        new String[]{"video/mp4", "image/jpeg"},
-                                        (path, uri) -> {
-                                            Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-                                            mediaScanIntent.setData(uri);
-                                            context.sendBroadcast(mediaScanIntent);
-                                            // Only NOW show 100% — file is truly in Gallery
-                                            notifyJsDownloadComplete(true);
-                                        }
-                                    );
-                                } else {
-                                    notifyJsDownloadComplete(true);
-                                }
-                            } else {
-                                notifyJsDownloadComplete(true);
-                            }
-                        } else {
-                            // Download failed
-                            notifyJsDownloadComplete(false);
-                        }
-                    }
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    notifyJsDownloadComplete(false);
-                }
-
-                activeDownloadId = -1;
-            }
-        };
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(onDownloadCompleteReceiver,
-                new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-                Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(onDownloadCompleteReceiver,
-                new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
         }
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        stopProgressPolling();
-        if (progressScheduler != null && !progressScheduler.isShutdown()) {
-            progressScheduler.shutdownNow();
-        }
-        if (onDownloadCompleteReceiver != null) {
-            try {
-                unregisterReceiver(onDownloadCompleteReceiver);
-            } catch (Exception ignored) {}
+        if (downloadExecutor != null && !downloadExecutor.isShutdown()) {
+            downloadExecutor.shutdownNow();
         }
     }
 
-    // ── Start Native Download & begin real-time progress polling ─────────────
-    public void startNativeDownload(String url, String filename, String title, String mimeType) {
-        try {
-            if (url == null || url.trim().isEmpty()) {
-                Toast.makeText(this, "Download URL is invalid", Toast.LENGTH_SHORT).show();
-                return;
-            }
-
-            String cleanTitle = (title != null && !title.trim().isEmpty()) ? title : "Video Download";
-            String cleanName = (filename != null && !filename.trim().isEmpty()) ? filename : "video_" + System.currentTimeMillis() + ".mp4";
-            cleanName = cleanName.replaceAll("[\\\\/:*?\"<>|]", "_");
-            if (!cleanName.toLowerCase().endsWith(".mp4") && !cleanName.toLowerCase().endsWith(".jpg")) {
-                cleanName += ".mp4";
-            }
-
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            request.setTitle(cleanTitle);
-            request.setDescription("Downloading to Gallery...");
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, cleanName);
-
-            String safeMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "video/mp4";
-            request.setMimeType(safeMime);
-            request.addRequestHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36");
-
-            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            if (dm != null) {
-                stopProgressPolling(); // cancel any previous polling
-                long downloadId = dm.enqueue(request);
-                activeDownloadId = downloadId;
-                Toast.makeText(this, "Download started!", Toast.LENGTH_SHORT).show();
-                startProgressPolling(dm, downloadId);
-            } else {
-                Toast.makeText(this, "System DownloadManager not available", Toast.LENGTH_SHORT).show();
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            Toast.makeText(this, "Download error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+    // ── High-Performance In-App OkHttp Downloader Engine ────────────────────────
+    public void startNativeOkHttpDownload(String url, String filename, String title, String mimeType) {
+        if (url == null || url.trim().isEmpty()) {
+            Toast.makeText(this, "Download URL is invalid", Toast.LENGTH_SHORT).show();
+            notifyJsDownloadComplete(false);
+            return;
         }
-    }
 
-    // ── Poll DownloadManager every 500ms, push % to JS ───────────────────────
-    private void startProgressPolling(DownloadManager dm, long downloadId) {
-        progressFuture = progressScheduler.scheduleWithFixedDelay(() -> {
+        final String cleanTitle = (title != null && !title.trim().isEmpty()) ? title : "Video Download";
+        String cleanName = (filename != null && !filename.trim().isEmpty()) ? filename : "video_" + System.currentTimeMillis() + ".mp4";
+        cleanName = cleanName.replaceAll("[\\\\/:*?\"<>|]", "_");
+        if (!cleanName.toLowerCase().endsWith(".mp4") && !cleanName.toLowerCase().endsWith(".jpg")) {
+            cleanName += ".mp4";
+        }
+        final String targetFilename = cleanName;
+        final String safeMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "video/mp4";
+
+        Toast.makeText(this, "Download started...", Toast.LENGTH_SHORT).show();
+        Log.i(TAG, "Starting OkHttp download for URL: " + url + " | File: " + targetFilename);
+
+        downloadExecutor.execute(() -> {
+            OutputStream outputStream = null;
+            Uri mediaStoreUri = null;
+            File targetFile = null;
+
             try {
-                DownloadManager.Query query = new DownloadManager.Query();
-                query.setFilterById(downloadId);
-                try (Cursor cursor = dm.query(query)) {
-                    if (cursor == null || !cursor.moveToFirst()) return;
+                Request.Builder reqBuilder = new Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                    .header("Accept", "*/*")
+                    .header("Connection", "keep-alive");
 
-                    int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
-                    int status = (statusIdx != -1) ? cursor.getInt(statusIdx) : -1;
-
-                    // Terminal states handled by BroadcastReceiver
-                    if (status == DownloadManager.STATUS_SUCCESSFUL ||
-                        status == DownloadManager.STATUS_FAILED) return;
-
-                    int downloadedIdx = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
-                    int totalIdx = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
-
-                    long downloaded = (downloadedIdx != -1) ? cursor.getLong(downloadedIdx) : 0;
-                    long total = (totalIdx != -1) ? cursor.getLong(totalIdx) : -1;
-
-                    int percent;
-                    String downloadedStr = formatBytes(downloaded);
-                    String totalStr;
-
-                    if (total > 0 && downloaded >= 0) {
-                        percent = (int) ((downloaded * 100L) / total);
-                        // Cap at 99% — true 100% only fires after MediaScanner gallery save
-                        if (percent > 99) percent = 99;
-                        totalStr = formatBytes(total);
-                    } else {
-                        // Unknown total size — indeterminate
-                        percent = -1;
-                        totalStr = "?";
-                    }
-
-                    final int finalPercent = percent;
-                    final String finalDownloaded = downloadedStr;
-                    final String finalTotal = totalStr;
-
-                    mainHandler.post(() -> notifyJsProgress(finalPercent, finalDownloaded, finalTotal));
+                // Add platform-specific referers for CDN access
+                if (url.contains("cdninstagram.com") || url.contains("fbcdn.net")) {
+                    reqBuilder.header("Referer", "https://www.instagram.com/");
+                } else if (url.contains("twimg.com")) {
+                    reqBuilder.header("Referer", "https://twitter.com/");
+                } else if (url.contains("tiktokcdn.com")) {
+                    reqBuilder.header("Referer", "https://www.tiktok.com/");
                 }
-            } catch (Exception ignored) {}
-        }, 300, 500, TimeUnit.MILLISECONDS);
-    }
 
-    private void stopProgressPolling() {
-        if (progressFuture != null && !progressFuture.isDone()) {
-            progressFuture.cancel(false);
-            progressFuture = null;
-        }
+                Response response = okHttpClient.newCall(reqBuilder.build()).execute();
+                if (!response.isSuccessful()) {
+                    Log.e(TAG, "Server returned HTTP error: " + response.code() + " " + response.message());
+                    mainHandler.post(() -> Toast.makeText(MainActivity.this, "Download failed (HTTP " + response.code() + ")", Toast.LENGTH_LONG).show());
+                    notifyJsDownloadComplete(false);
+                    return;
+                }
+
+                ResponseBody body = response.body();
+                if (body == null) {
+                    Log.e(TAG, "Empty response body");
+                    notifyJsDownloadComplete(false);
+                    return;
+                }
+
+                long totalBytes = body.contentLength();
+                InputStream inputStream = body.byteStream();
+
+                // Open destination OutputStream: MediaStore (Android 10+) or Direct File (Android 9-)
+                ContentResolver resolver = getContentResolver();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Video.Media.DISPLAY_NAME, targetFilename);
+                    values.put(MediaStore.Video.Media.MIME_TYPE, safeMime);
+                    values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Down4U");
+                    values.put(MediaStore.Video.Media.IS_PENDING, 1);
+
+                    mediaStoreUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (mediaStoreUri == null) {
+                        mediaStoreUri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                    }
+                    if (mediaStoreUri != null) {
+                        outputStream = resolver.openOutputStream(mediaStoreUri);
+                    }
+                }
+
+                // Fallback for older Android or if MediaStore insert failed
+                if (outputStream == null) {
+                    File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    File appDir = new File(downloadsDir, "Down4U");
+                    if (!appDir.exists()) appDir.mkdirs();
+                    targetFile = new File(appDir, targetFilename);
+                    outputStream = new FileOutputStream(targetFile);
+                }
+
+                // Stream bytes with progress reporting
+                byte[] buffer = new byte[65536]; // 64 KB buffer
+                int bytesRead;
+                long totalDownloaded = 0;
+                long lastProgressTime = 0;
+
+                while ((bytesRead = inputStream.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, bytesRead);
+                    totalDownloaded += bytesRead;
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastProgressTime > 200) { // Throttle callbacks to 5 times/sec
+                        lastProgressTime = now;
+                        int percent = (totalBytes > 0) ? (int) ((totalDownloaded * 100L) / totalBytes) : -1;
+                        if (percent > 99) percent = 99; // 100% after complete scan
+                        final int p = percent;
+                        final String dlStr = formatBytes(totalDownloaded);
+                        final String totStr = totalBytes > 0 ? formatBytes(totalBytes) : "?";
+                        mainHandler.post(() -> notifyJsProgress(p, dlStr, totStr));
+                    }
+                }
+
+                outputStream.flush();
+                outputStream.close();
+                outputStream = null;
+
+                // Mark MediaStore entry as complete
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && mediaStoreUri != null) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Video.Media.IS_PENDING, 0);
+                    resolver.update(mediaStoreUri, values, null, null);
+                }
+
+                // Scan into Gallery via MediaScannerConnection
+                final String scanPath = targetFile != null ? targetFile.getAbsolutePath() : null;
+                if (scanPath != null) {
+                    MediaScannerConnection.scanFile(
+                        MainActivity.this,
+                        new String[]{scanPath},
+                        new String[]{safeMime},
+                        (path, uri) -> {
+                            Intent scanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                            scanIntent.setData(uri);
+                            sendBroadcast(scanIntent);
+                        }
+                    );
+                }
+
+                Log.i(TAG, "Download finished successfully! Total bytes: " + totalDownloaded);
+                final long finalTotal = totalDownloaded;
+                mainHandler.post(() -> {
+                    Toast.makeText(MainActivity.this, "Download Complete! Saved to Gallery", Toast.LENGTH_SHORT).show();
+                    notifyJsProgress(100, formatBytes(finalTotal), formatBytes(finalTotal));
+                    notifyJsDownloadComplete(true);
+                });
+
+            } catch (Exception e) {
+                Log.e(TAG, "Download failed with exception: " + e.getMessage(), e);
+                // Clean up partial downloads on failure
+                if (mediaStoreUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try { getContentResolver().delete(mediaStoreUri, null, null); } catch (Exception ignored) {}
+                }
+                if (targetFile != null && targetFile.exists()) {
+                    try { targetFile.delete(); } catch (Exception ignored) {}
+                }
+                mainHandler.post(() -> {
+                    Toast.makeText(MainActivity.this, "Download error: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    notifyJsDownloadComplete(false);
+                });
+            } finally {
+                if (outputStream != null) {
+                    try { outputStream.close(); } catch (Exception ignored) {}
+                }
+            }
+        });
     }
 
     // ── JS Bridge: live progress callback ────────────────────────────────────
@@ -332,10 +339,10 @@ public class MainActivity extends BridgeActivity {
                                 headlessWebView.stopLoading();
                                 headlessWebView.destroy();
                             } catch (Exception ignored) {}
-                            headlessWebView = null;
+                                headlessWebView = null;
                         }
                         notifyJsSnifferSuccess(reqUrl);
-                        startNativeDownload(reqUrl, safeFilename, cleanTitle, "video/mp4");
+                        startNativeOkHttpDownload(reqUrl, safeFilename, cleanTitle, "video/mp4");
                     });
                 }
                 return super.shouldInterceptRequest(view, request);
@@ -366,7 +373,7 @@ public class MainActivity extends BridgeActivity {
                                         headlessWebView = null;
                                     }
                                     notifyJsSnifferSuccess(foundUrl);
-                                    startNativeDownload(foundUrl, safeFilename, cleanTitle, "video/mp4");
+                                    startNativeOkHttpDownload(foundUrl, safeFilename, cleanTitle, "video/mp4");
                                 });
                             }
                         }
@@ -387,12 +394,20 @@ public class MainActivity extends BridgeActivity {
             return true;
         }
 
+        if (lower.contains("mime=video") || lower.contains("video/mp4") || lower.contains("&mime=video%2fmp4")) {
+            return true;
+        }
+
+        if (lower.contains("googlevideo.com/videoplayback")) {
+            return true;
+        }
+
         if ((lower.contains("cdninstagram.com") || lower.contains("fbcdn.net")) &&
             (lower.contains("bytestart") || lower.contains("video") || lower.contains(".mp4") || lower.contains("oe="))) {
             return true;
         }
 
-        if (lower.contains("video.twimg.com") && lower.contains(".mp4")) {
+        if (lower.contains("video.twimg.com") && (lower.contains(".mp4") || lower.contains("m3u8") || lower.contains("vid/"))) {
             return true;
         }
 
@@ -449,12 +464,12 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void downloadVideo(String url, String filename, String title) {
-            runOnUiThread(() -> startNativeDownload(url, filename, title, "video/mp4"));
+            runOnUiThread(() -> startNativeOkHttpDownload(url, filename, title, "video/mp4"));
         }
 
         @JavascriptInterface
         public void downloadMedia(String url, String filename, String title, String mimeType) {
-            runOnUiThread(() -> startNativeDownload(url, filename, title, mimeType));
+            runOnUiThread(() -> startNativeOkHttpDownload(url, filename, title, mimeType));
         }
 
         @JavascriptInterface
