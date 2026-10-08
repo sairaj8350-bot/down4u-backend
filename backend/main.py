@@ -746,18 +746,87 @@ def extract_ytdlp(url: str, platform: str, cookie_file: Optional[str] = None) ->
         return info
 
 
+# ─── Safe Proxy Streamer — prevents 502 & connection leaks ──────────────────
+async def _safe_proxy_stream(
+    stream_url: str,
+    headers: Dict[str, str],
+    safe_name: str,
+    redirect_fallback: bool = True,
+    redirect_url: Optional[str] = None,
+):
+    """
+    Proxy a remote stream with guaranteed cleanup.
+    - Uses explicit aclose() to ensure connections never leak (prevents 502 hang)
+    - Upstream 4xx/5xx → clean redirect or 502 error instead of hanging
+    - Sets all required headers for Android DownloadManager
+    """
+    actual_redirect_url = redirect_url or stream_url
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=120.0),
+        follow_redirects=True
+    )
+    try:
+        req = client.build_request("GET", stream_url, headers=headers)
+        resp = await client.send(req, stream=True)
+
+        if resp.status_code >= 400:
+            await resp.aclose()
+            await client.aclose()
+            logger.warning("Upstream proxy returned HTTP %d", resp.status_code)
+            if redirect_fallback:
+                return RedirectResponse(url=actual_redirect_url, status_code=302)
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"Upstream stream returned HTTP {resp.status_code}"}
+            )
+
+        content_length = resp.headers.get("content-length")
+        content_type = resp.headers.get("content-type") or "video/mp4"
+
+        async def _stream_generator():
+            try:
+                async for chunk in resp.aiter_bytes(131072):
+                    yield chunk
+            except Exception as stream_err:
+                logger.warning("Stream interrupted: %s", stream_err)
+            finally:
+                await resp.aclose()
+                await client.aclose()
+
+        resp_headers = {
+            "Content-Disposition": f'attachment; filename="{safe_name}"',
+            "Content-Type": content_type,
+            "Access-Control-Allow-Origin": "*",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache",
+        }
+        if content_length:
+            resp_headers["Content-Length"] = content_length
+
+        return StreamingResponse(_stream_generator(), media_type=content_type, headers=resp_headers)
+
+    except Exception as e:
+        logger.warning("Proxy connection failed: %s", e)
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+        if redirect_fallback:
+            return RedirectResponse(url=actual_redirect_url, status_code=302)
+        return JSONResponse(status_code=502, content={"error": f"Proxy connection failed: {str(e)}"})
+
+
 # ─── Lifespan & FastAPI Setup ────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Write cookie file ONCE at startup — cached for all subsequent requests
     cf = _init_cookie_file()
     has_cookies = bool(cf)
-    logger.info("Down4U Universal Backend starting. Cookies configured: %s", has_cookies)
+    logger.info("Down4U Universal Backend v5.0.0 starting. Cookies configured: %s", has_cookies)
     yield
     logger.info("Down4U Backend stopping.")
 
 
-app = FastAPI(title="Down4U Pro API", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="Down4U Pro API", version="5.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -776,8 +845,8 @@ async def health():
     return {
         "status": "online",
         "app": "Down4U Pro Video Downloader",
-        "version": "4.0.0",
-        "engines": ["TikWM", "yt-dlp", "oEmbed"],
+        "version": "5.0.0",
+        "engines": ["TikWM", "Invidious", "Piped", "FxTwitter", "yt-dlp", "oEmbed"],
         "cookies": bool(os.environ.get(COOKIES_ENV))
     }
 
@@ -821,49 +890,84 @@ async def get_info(url: str = Query(...)):
             logger.info("Facebook extracted via public scraper in fast path")
             return JSONResponse(content=fb_res)
 
-    # ── PARALLEL PATH: yt-dlp + Piped/Invidious/oEmbed for YouTube/Web/fallbacks ─
+    # ── PARALLEL PATH: Race Invidious vs Piped (YouTube) or yt-dlp fallback ──
     cf = _write_cookie_file()
     ytdlp_error = None
 
+    if platform == "YouTube":
+        # Run Invidious and Piped simultaneously — first to succeed wins
+        async def _try_invidious():
+            try:
+                return await asyncio.wait_for(extract_youtube_invidious(url), timeout=5.0)
+            except Exception:
+                return None
+
+        async def _try_piped():
+            try:
+                return await asyncio.wait_for(extract_youtube_piped(url), timeout=4.0)
+            except Exception:
+                return None
+
+        invidious_task = asyncio.create_task(_try_invidious())
+        piped_task = asyncio.create_task(_try_piped())
+
+        done, pending = await asyncio.wait(
+            [invidious_task, piped_task],
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=5.5
+        )
+
+        yt_alt = None
+        for task in list(done):
+            try:
+                result = task.result()
+                if result:
+                    yt_alt = result
+                    break
+            except Exception:
+                pass
+
+        # Cancel remaining tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except Exception:
+                pass
+
+        # If first done failed, check remaining
+        if not yt_alt:
+            remaining = [t for t in done if t not in [invidious_task, piped_task] or True]
+            for task in list(done):
+                if not task.cancelled():
+                    try:
+                        result = task.result()
+                        if result:
+                            yt_alt = result
+                            break
+                    except Exception:
+                        pass
+
+        if yt_alt:
+            logger.info("YouTube extracted via fast external resolver: %s", yt_alt.get("engine"))
+            return JSONResponse(content=yt_alt)
+
+    # ── yt-dlp fallback with strict timeout ──
     async def _run_ytdlp():
         try:
-            return await asyncio.to_thread(extract_ytdlp, url, platform, cf)
+            return await asyncio.wait_for(
+                asyncio.to_thread(extract_ytdlp, url, platform, cf),
+                timeout=12.0
+            )
+        except asyncio.TimeoutError:
+            return Exception("Extraction timed out after 12s")
         except Exception as e:
             return e
 
-    async def _run_yt_alternatives():
-        """For YouTube: try Invidious → Piped → oEmbed in sequence with fast timeouts."""
-        if platform != "YouTube":
-            return None
-        # Try Invidious first (fastest, active companion PO-Token support ~1.5s)
-        invidious = await extract_youtube_invidious(url)
-        if invidious:
-            return invidious
-        # Try Piped second (2.5s timeout)
-        piped = await extract_youtube_piped(url)
-        if piped:
-            return piped
-        return None
-
-    # For YouTube: Try high-speed Invidious/Piped resolvers FIRST (takes ~1.5s)
-    # This prevents the server from locking up on slow datacenter IP bot-detection.
-    if platform == "YouTube":
-        yt_alt = await _run_yt_alternatives()
-        if yt_alt:
-            logger.info("YouTube video extracted via fast external resolver: %s", yt_alt.get("engine"))
-            return JSONResponse(content=yt_alt)
-
-    # Secondary / Fallback: Run yt-dlp with timeout
-    try:
-        ytdlp_result = await asyncio.wait_for(_run_ytdlp(), timeout=12.0)
-    except asyncio.TimeoutError:
-        ytdlp_result = Exception("Extraction timed out after 12s")
-    except Exception as e_ytdlp:
-        ytdlp_result = e_ytdlp
+    ytdlp_result = await _run_ytdlp()
 
     oembed_result = None
     if platform == "YouTube" and (isinstance(ytdlp_result, Exception) or not ytdlp_result):
-        # Last resort fallback: oEmbed
         oembed_result = await extract_youtube_oembed(url)
 
     # Process yt-dlp result
@@ -977,193 +1081,105 @@ async def download_video(
     platform = detect_platform(target_url or "") if target_url else "Web"
     safe_name = filename or f"video_{platform}.mp4"
 
-    # ── FAST PATH: direct_url already known — immediately stream or redirect ──
+    # ── FAST PATH: direct_url known — proxy or redirect (with guaranteed cleanup) ──
     if raw_stream_url:
         logger.info("[FAST] Direct CDN stream for %s platform=%s", safe_name, platform)
         is_youtube_stream = platform == "YouTube" or "googlevideo.com" in raw_stream_url
+
         if redirect and not is_youtube_stream:
             return RedirectResponse(url=raw_stream_url, status_code=302)
-        # Proxy mode (non-redirect) - Essential for YouTube to prevent 403 on Android
-        try:
-            proxy_headers = {
-                "User-Agent": BROWSER_UA,
-                "Accept": "*/*",
-                "Accept-Encoding": "identity",
-                "Connection": "keep-alive"
-            }
-            if "cdninstagram.com" in raw_stream_url or "fbcdn.net" in raw_stream_url:
-                proxy_headers["Referer"] = "https://www.instagram.com/"
-            elif "twimg.com" in raw_stream_url:
-                proxy_headers["Referer"] = "https://twitter.com/"
-            elif "tiktokcdn.com" in raw_stream_url:
-                proxy_headers["Referer"] = "https://www.tiktok.com/"
 
-            proxy_client = httpx.AsyncClient(timeout=120.0, follow_redirects=True)
-            proxy_req = proxy_client.build_request("GET", raw_stream_url, headers=proxy_headers)
-            proxy_resp = await proxy_client.send(proxy_req, stream=True)
+        proxy_headers = {
+            "User-Agent": BROWSER_UA,
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Connection": "keep-alive"
+        }
+        if "cdninstagram.com" in raw_stream_url or "fbcdn.net" in raw_stream_url:
+            proxy_headers["Referer"] = "https://www.instagram.com/"
+        elif "twimg.com" in raw_stream_url:
+            proxy_headers["Referer"] = "https://twitter.com/"
+        elif "tiktokcdn.com" in raw_stream_url:
+            proxy_headers["Referer"] = "https://www.tiktok.com/"
 
-            if proxy_resp.status_code >= 400:
-                await proxy_resp.aclose()
-                await proxy_client.aclose()
-                logger.warning("Upstream direct stream failed with HTTP %d for %s", proxy_resp.status_code, platform)
-                if not is_youtube_stream:
-                    return RedirectResponse(url=raw_stream_url, status_code=302)
-                # If YouTube stream failed (e.g. expired URL), fall through to fresh resolution
-                raw_stream_url = None
-            else:
-                cl = proxy_resp.headers.get("content-length")
-                ct = proxy_resp.headers.get("content-type") or "video/mp4"
+        proxy_result = await _safe_proxy_stream(
+            stream_url=raw_stream_url,
+            headers=proxy_headers,
+            safe_name=safe_name,
+            redirect_fallback=not is_youtube_stream,
+            redirect_url=raw_stream_url if not is_youtube_stream else None,
+        )
 
-                async def _proxy_streamer():
-                    try:
-                        async for chunk in proxy_resp.aiter_bytes(131072):
-                            yield chunk
-                    finally:
-                        await proxy_resp.aclose()
-                        await proxy_client.aclose()
-
-                resp_hdrs = {
-                    "Content-Disposition": f'attachment; filename="{safe_name}"',
-                    "Content-Type": ct,
-                    "Access-Control-Allow-Origin": "*",
-                    "Accept-Ranges": "bytes"
-                }
-                if cl:
-                    resp_hdrs["Content-Length"] = cl
-
-                return StreamingResponse(_proxy_streamer(), media_type=ct, headers=resp_hdrs)
-        except Exception as e:
-            logger.warning("Proxy stream failed (%s)", e)
-            if not is_youtube_stream:
-                return RedirectResponse(url=raw_stream_url, status_code=302)
+        # If YouTube CDN URL expired (4xx), fall through to fresh resolution
+        if is_youtube_stream and isinstance(proxy_result, JSONResponse) and proxy_result.status_code >= 400:
             raw_stream_url = None
+        else:
+            return proxy_result
 
     if not target_url:
         return JSONResponse(status_code=400, content={"error": "URL is required for download"})
 
-    # 2. Check TikTok via TikWM
+    # ── Platform-specific fast paths (all use _safe_proxy_stream) ──
     if platform == "TikTok":
         tt = await extract_tiktok(target_url)
         if tt and tt.get("direct_stream_url"):
             d_url = tt["direct_stream_url"]
             if redirect:
                 return RedirectResponse(url=d_url, status_code=302)
-            try:
-                async def _proxy_tt():
-                    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                        async with client.stream("GET", d_url, headers={"User-Agent": BROWSER_UA}) as resp:
-                            async for chunk in resp.aiter_bytes(65536):
-                                yield chunk
+            return await _safe_proxy_stream(
+                d_url, {"User-Agent": BROWSER_UA, "Referer": "https://www.tiktok.com/"},
+                safe_name, redirect_fallback=True, redirect_url=d_url
+            )
 
-                return StreamingResponse(
-                    _proxy_tt(),
-                    media_type="video/mp4",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{safe_name}"',
-                        "Content-Type": "video/mp4",
-                        "Access-Control-Allow-Origin": "*"
-                    }
-                )
-            except Exception as e_tt:
-                logger.warning("TikTok stream proxy failed (%s), redirecting", e_tt)
-                return RedirectResponse(url=d_url, status_code=302)
-
-    # 3. Check Instagram Embed / Public Scraper
     if platform == "Instagram":
         ig = await extract_instagram(target_url)
         if ig and ig.get("direct_stream_url"):
             d_url = ig["direct_stream_url"]
             if redirect:
                 return RedirectResponse(url=d_url, status_code=302)
-            try:
-                async def _proxy_ig():
-                    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                        async with client.stream("GET", d_url, headers={"User-Agent": BROWSER_UA}) as resp:
-                            async for chunk in resp.aiter_bytes(65536):
-                                yield chunk
+            return await _safe_proxy_stream(
+                d_url, {"User-Agent": BROWSER_UA, "Referer": "https://www.instagram.com/"},
+                safe_name, redirect_fallback=True, redirect_url=d_url
+            )
 
-                return StreamingResponse(
-                    _proxy_ig(),
-                    media_type="video/mp4",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{safe_name}"',
-                        "Content-Type": "video/mp4",
-                        "Access-Control-Allow-Origin": "*"
-                    }
-                )
-            except Exception as e_ig:
-                logger.warning("Instagram stream proxy failed (%s), redirecting", e_ig)
-                return RedirectResponse(url=d_url, status_code=302)
-
-    # 4. Check Twitter / X Syndication Scraper
     if platform == "Twitter":
         tw = await extract_twitter(target_url)
         if tw and tw.get("direct_stream_url"):
             d_url = tw["direct_stream_url"]
             if redirect:
                 return RedirectResponse(url=d_url, status_code=302)
-            try:
-                async def _proxy_tw():
-                    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                        async with client.stream("GET", d_url, headers={"User-Agent": BROWSER_UA}) as resp:
-                            async for chunk in resp.aiter_bytes(65536):
-                                yield chunk
+            return await _safe_proxy_stream(
+                d_url, {"User-Agent": BROWSER_UA, "Referer": "https://twitter.com/"},
+                safe_name, redirect_fallback=True, redirect_url=d_url
+            )
 
-                return StreamingResponse(
-                    _proxy_tw(),
-                    media_type="video/mp4",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{safe_name}"',
-                        "Content-Type": "video/mp4",
-                        "Access-Control-Allow-Origin": "*"
-                    }
-                )
-            except Exception as e_tw:
-                logger.warning("Twitter stream proxy failed (%s), redirecting", e_tw)
-                return RedirectResponse(url=d_url, status_code=302)
-
-    # 5. Check Facebook Public CDN Scraper
     if platform == "Facebook":
         fb = await extract_facebook(target_url)
         if fb and fb.get("direct_stream_url"):
             d_url = fb["direct_stream_url"]
             if redirect:
                 return RedirectResponse(url=d_url, status_code=302)
-            try:
-                async def _proxy_fb():
-                    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                        async with client.stream("GET", d_url, headers={"User-Agent": BROWSER_UA}) as resp:
-                            async for chunk in resp.aiter_bytes(65536):
-                                yield chunk
+            return await _safe_proxy_stream(
+                d_url, {"User-Agent": BROWSER_UA},
+                safe_name, redirect_fallback=True, redirect_url=d_url
+            )
 
-                return StreamingResponse(
-                    _proxy_fb(),
-                    media_type="video/mp4",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{safe_name}"',
-                        "Content-Type": "video/mp4",
-                        "Access-Control-Allow-Origin": "*"
-                    }
-                )
-            except Exception as e_fb:
-                logger.warning("Facebook stream proxy failed (%s), redirecting", e_fb)
-                return RedirectResponse(url=d_url, status_code=302)
-
-    # 6. Resolve stream URL (Fast Invidious first for YouTube, then yt-dlp visionos fallback)
+    # ── YouTube stream resolution: Invidious first (with timeout), then yt-dlp ──
     stream_url = None
     if platform == "YouTube" and target_url:
         logger.info("Resolving YouTube stream via Invidious for download: %s", target_url)
         try:
-            inv = await extract_youtube_invidious(target_url)
+            inv = await asyncio.wait_for(extract_youtube_invidious(target_url), timeout=5.0)
             if inv:
-                if inv.get("qualities"):
-                    target_h = int(quality[:-1]) if quality.endswith("p") and quality[:-1].isdigit() else 720
-                    q_match = next((q["direct_url"] for q in inv["qualities"] if q.get("height") == target_h and q.get("direct_url")), None)
-                    if not q_match:
-                        q_match = inv["qualities"][0].get("direct_url")
-                    stream_url = q_match or inv.get("direct_stream_url")
-                else:
-                    stream_url = inv.get("direct_stream_url")
+                target_h = int(quality[:-1]) if quality.endswith("p") and quality[:-1].isdigit() else 720
+                q_match = next(
+                    (q["direct_url"] for q in inv.get("qualities", [])
+                     if q.get("height") == target_h and q.get("direct_url")),
+                    None
+                )
+                if not q_match and inv.get("qualities"):
+                    q_match = inv["qualities"][0].get("direct_url")
+                stream_url = q_match or inv.get("direct_stream_url")
         except Exception as e_inv:
             logger.warning("Invidious resolution failed in download endpoint: %s", e_inv)
 
@@ -1200,6 +1216,8 @@ async def download_video(
                     return info.get("url")
 
             stream_url = await asyncio.wait_for(asyncio.to_thread(_get_stream), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.error("yt-dlp timed out for download: %s", target_url)
         except Exception as e:
             logger.error("Download extraction failed for %s: %s", target_url, e)
 
@@ -1215,46 +1233,13 @@ async def download_video(
             "Connection": "keep-alive",
         }
 
-        try:
-            p6_client = httpx.AsyncClient(timeout=180.0, follow_redirects=True)
-            p6_req = p6_client.build_request("GET", stream_url, headers=yt_headers)
-            p6_resp = await p6_client.send(p6_req, stream=True)
-
-            if p6_resp.status_code >= 400:
-                await p6_resp.aclose()
-                await p6_client.aclose()
-                if platform != "YouTube":
-                    return RedirectResponse(url=stream_url, status_code=302)
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": f"Upstream video stream unavailable (status {p6_resp.status_code})."}
-                )
-
-            cl6 = p6_resp.headers.get("content-length")
-            ct6 = p6_resp.headers.get("content-type") or "video/mp4"
-
-            async def _p6_streamer():
-                try:
-                    async for chunk in p6_resp.aiter_bytes(131072):
-                        yield chunk
-                finally:
-                    await p6_resp.aclose()
-                    await p6_client.aclose()
-
-            resp_hdrs6 = {
-                "Content-Disposition": f'attachment; filename="{safe_name}"',
-                "Content-Type": ct6,
-                "Access-Control-Allow-Origin": "*",
-                "Accept-Ranges": "bytes"
-            }
-            if cl6:
-                resp_hdrs6["Content-Length"] = cl6
-
-            return StreamingResponse(_p6_streamer(), media_type=ct6, headers=resp_hdrs6)
-        except Exception as p6_err:
-            logger.warning("Path 6 stream failed (%s)", p6_err)
-            if platform != "YouTube":
-                return RedirectResponse(url=stream_url, status_code=302)
+        return await _safe_proxy_stream(
+            stream_url=stream_url,
+            headers=yt_headers,
+            safe_name=safe_name,
+            redirect_fallback=(platform != "YouTube"),
+            redirect_url=stream_url if platform != "YouTube" else None,
+        )
 
     return JSONResponse(
         status_code=400,
