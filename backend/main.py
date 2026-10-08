@@ -164,27 +164,28 @@ def _extract_youtube_id(url: str) -> Optional[str]:
 
 # ─── YouTube Piped API Engine ─────────────────────────────────────────────────
 # Piped is an open-source YouTube proxy. Its stream URLs work from ANY IP.
+# ─── YouTube Piped API Engine ─────────────────────────────────────────────────
+# Piped is an open-source YouTube proxy.
 PIPED_INSTANCES = [
+    "https://pipedapi.leptons.xyz",
+    "https://pipedapi.r4fo.com",
     "https://pipedapi.kavin.rocks",
-    "https://pipedapi.tokhmi.xyz",
-    "https://pipedapi.moomoo.me",
-    "https://pipedapi.in.projectsegfau.lt",
 ]
 
 async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
-    """Try multiple Piped API instances. Returns streamable MP4 URLs portable across IPs."""
+    """Try Piped API instances with strict 2.5s timeout."""
     vid_id = _extract_youtube_id(url)
     if not vid_id:
         return None
 
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-        for instance in PIPED_INSTANCES:
-            try:
+    for instance in PIPED_INSTANCES:
+        try:
+            async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
                 r = await client.get(
                     f"{instance}/streams/{vid_id}",
                     headers={"User-Agent": BROWSER_UA, "Accept": "application/json"}
                 )
-                if r.status_code != 200:
+                if r.status_code != 200 or not r.text or not r.text.strip():
                     continue
                 data = r.json()
                 title = data.get("title") or "YouTube Video"
@@ -194,16 +195,11 @@ async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
                 safe_name = f"{_sanitize_title(title)}_YouTube.mp4"
                 encoded_url = urllib.parse.quote(url, safe="")
 
-                # Collect video streams with audio (muxed) or best video+audio
                 video_streams = data.get("videoStreams") or []
-                audio_streams = data.get("audioStreams") or []
-
-                # Filter muxed streams (have both video+audio)
                 muxed = [s for s in video_streams if s.get("videoOnly") is False]
                 if not muxed:
-                    muxed = video_streams  # fallback: take all
+                    muxed = video_streams
 
-                # Sort by quality descending
                 muxed.sort(key=lambda s: s.get("quality", "").replace("p", "").split(" ")[0] or "0", reverse=True)
 
                 qualities = []
@@ -221,7 +217,6 @@ async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
                         continue
                     seen_heights.add(h)
                     encoded_stream = urllib.parse.quote(stream_url, safe="")
-                    # ALWAYS use proxy (redirect=false) — Piped URLs may be instance-bound
                     dl_url = (
                         f"/api/download?url={encoded_url}"
                         f"&direct_url={encoded_stream}"
@@ -238,11 +233,9 @@ async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
                         break
 
                 if not qualities:
-                    continue  # try next instance
+                    continue
 
-                # Best quality = highest resolution
                 best_stream = muxed[0].get("url") if muxed else None
-
                 logger.info("YouTube extracted via Piped instance: %s (video_id=%s)", instance, vid_id)
                 return {
                     "success": True,
@@ -261,33 +254,34 @@ async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
                     "direct_stream_url": best_stream,
                     "engine": "youtube-piped"
                 }
-            except Exception as e:
-                logger.warning("Piped instance %s failed: %s", instance, e)
-                continue
+        except Exception:
+            continue
     return None
 
 
 # ─── YouTube Invidious API Engine ─────────────────────────────────────────────
+# Invidious instances with active companion PO-Token support
 INVIDIOUS_INSTANCES = [
-    "https://invidious.privacydev.net",
-    "https://inv.nadeko.net",
-    "https://invidious.fdn.fr",
+    "https://invidious.f5.si",
+    "https://inv.tux.pizza",
+    "https://invidious.nerdvpn.de",
+    "https://yewtu.be",
 ]
 
 async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
-    """Try Invidious API instances as secondary YouTube engine."""
+    """Try Invidious API instances with fast 3.5s timeout. Primary high-speed YouTube engine."""
     vid_id = _extract_youtube_id(url)
     if not vid_id:
         return None
 
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-        for instance in INVIDIOUS_INSTANCES:
-            try:
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            async with httpx.AsyncClient(timeout=3.5, follow_redirects=True) as client:
                 r = await client.get(
                     f"{instance}/api/v1/videos/{vid_id}?fields=title,author,lengthSeconds,videoThumbnails,adaptiveFormats,formatStreams",
                     headers={"User-Agent": BROWSER_UA, "Accept": "application/json"}
                 )
-                if r.status_code != 200:
+                if r.status_code != 200 or not r.text or not r.text.strip():
                     continue
                 data = r.json()
                 title = data.get("title") or "YouTube Video"
@@ -300,25 +294,30 @@ async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
                 safe_name = f"{_sanitize_title(title)}_YouTube.mp4"
                 encoded_url = urllib.parse.quote(url, safe="")
 
-                # formatStreams = muxed mp4 streams (best for direct download)
-                streams = data.get("formatStreams") or []
-                streams.sort(key=lambda s: int(s.get("resolution", "0p").replace("p", "") or "0"), reverse=True)
+                # 1. formatStreams = muxed mp4 streams (has audio + video guaranteed)
+                format_streams = data.get("formatStreams") or []
+                # 2. adaptiveFormats = high resolution mp4 video streams
+                adaptive_formats = [
+                    f for f in (data.get("adaptiveFormats") or [])
+                    if f.get("container") == "mp4" and f.get("url") and f.get("resolution")
+                ]
 
                 qualities = []
                 seen_heights = set()
-                for stream in streams:
+
+                # Add muxed streams first
+                for stream in format_streams:
                     stream_url = stream.get("url")
                     if not stream_url:
                         continue
-                    res = stream.get("resolution") or "720p"
+                    res = stream.get("resolution") or stream.get("qualityLabel") or "360p"
                     try:
-                        h = int(res.replace("p", ""))
+                        h = int(res.replace("p", "").split(" ")[0])
                     except Exception:
-                        h = 720
+                        h = 360
                     if h in seen_heights:
                         continue
                     seen_heights.add(h)
-                    # Rewrite Invidious stream URL to use the same instance
                     encoded_stream = urllib.parse.quote(stream_url, safe="")
                     dl_url = (
                         f"/api/download?url={encoded_url}"
@@ -332,13 +331,40 @@ async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
                         "downloadUrl": dl_url,
                         "direct_url": stream_url
                     })
-                    if len(qualities) >= 4:
-                        break
+
+                # Add adaptive mp4 streams (e.g. 720p, 1080p)
+                for stream in adaptive_formats:
+                    stream_url = stream.get("url")
+                    if not stream_url:
+                        continue
+                    res = stream.get("resolution") or stream.get("qualityLabel") or "720p"
+                    try:
+                        h = int(res.replace("p", "").split(" ")[0])
+                    except Exception:
+                        h = 720
+                    if h in seen_heights:
+                        continue
+                    seen_heights.add(h)
+                    encoded_stream = urllib.parse.quote(stream_url, safe="")
+                    dl_url = (
+                        f"/api/download?url={encoded_url}"
+                        f"&direct_url={encoded_stream}"
+                        f"&filename={urllib.parse.quote(safe_name, safe='')}"
+                        f"&redirect=false"
+                    )
+                    qualities.append({
+                        "label": f"{h}p {'Full HD' if h >= 1080 else 'HD' if h >= 720 else 'SD'}",
+                        "height": h,
+                        "downloadUrl": dl_url,
+                        "direct_url": stream_url
+                    })
 
                 if not qualities:
                     continue
 
-                best_stream = streams[0].get("url") if streams else None
+                qualities.sort(key=lambda q: q.get("height", 0), reverse=True)
+                best_stream = qualities[0]["direct_url"] if qualities else None
+
                 logger.info("YouTube extracted via Invidious instance: %s (video_id=%s)", instance, vid_id)
                 return {
                     "success": True,
@@ -357,9 +383,9 @@ async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
                     "direct_stream_url": best_stream,
                     "engine": "youtube-invidious"
                 }
-            except Exception as e:
-                logger.warning("Invidious instance %s failed: %s", instance, e)
-                continue
+        except Exception as e:
+            logger.debug("Invidious instance %s error: %s", instance, e)
+            continue
     return None
 
 
@@ -703,8 +729,8 @@ def extract_ytdlp(url: str, platform: str, cookie_file: Optional[str] = None) ->
         opts["cookiefile"] = cookie_file
 
     if platform == "YouTube":
-        # android + ios clients are faster and bypass bot checks better than web
-        opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios"]}}
+        # visionos client bypasses bot-detection and PO-Token restrictions on datacenter IPs
+        opts["extractor_args"] = {"youtube": {"player_client": ["visionos", "mweb", "ios"]}}
     elif platform == "Instagram":
         opts["http_headers"]["User-Agent"] = MOBILE_UA
         opts["http_headers"]["X-IG-App-ID"] = "936619743392459"
@@ -806,22 +832,39 @@ async def get_info(url: str = Query(...)):
             return e
 
     async def _run_yt_alternatives():
-        """For YouTube: try Piped → Invidious → oEmbed in sequence."""
+        """For YouTube: try Invidious → Piped → oEmbed in sequence with fast timeouts."""
         if platform != "YouTube":
             return None
-        # Try Piped first (fastest, most instances)
-        piped = await extract_youtube_piped(url)
-        if piped:
-            return piped
-        # Try Invidious second
+        # Try Invidious first (fastest, active companion PO-Token support ~1.5s)
         invidious = await extract_youtube_invidious(url)
         if invidious:
             return invidious
-        # Last resort: oEmbed (metadata only, proxy download via yt-dlp path-6)
-        return await extract_youtube_oembed(url)
+        # Try Piped second (2.5s timeout)
+        piped = await extract_youtube_piped(url)
+        if piped:
+            return piped
+        return None
 
-    # Run yt-dlp and YouTube alternatives in parallel
-    ytdlp_result, oembed_result = await asyncio.gather(_run_ytdlp(), _run_yt_alternatives())
+    # For YouTube: Try high-speed Invidious/Piped resolvers FIRST (takes ~1.5s)
+    # This prevents the server from locking up on slow datacenter IP bot-detection.
+    if platform == "YouTube":
+        yt_alt = await _run_yt_alternatives()
+        if yt_alt:
+            logger.info("YouTube video extracted via fast external resolver: %s", yt_alt.get("engine"))
+            return JSONResponse(content=yt_alt)
+
+    # Secondary / Fallback: Run yt-dlp with timeout
+    try:
+        ytdlp_result = await asyncio.wait_for(_run_ytdlp(), timeout=12.0)
+    except asyncio.TimeoutError:
+        ytdlp_result = Exception("Extraction timed out after 12s")
+    except Exception as e_ytdlp:
+        ytdlp_result = e_ytdlp
+
+    oembed_result = None
+    if platform == "YouTube" and (isinstance(ytdlp_result, Exception) or not ytdlp_result):
+        # Last resort fallback: oEmbed
+        oembed_result = await extract_youtube_oembed(url)
 
     # Process yt-dlp result
     if isinstance(ytdlp_result, Exception):
@@ -934,7 +977,7 @@ async def download_video(
     platform = detect_platform(target_url or "") if target_url else "Web"
     safe_name = filename or f"video_{platform}.mp4"
 
-    # ── FAST PATH: direct_url already known — immediately redirect, no extractor ──
+    # ── FAST PATH: direct_url already known — immediately stream or redirect ──
     if raw_stream_url:
         logger.info("[FAST] Direct CDN stream for %s platform=%s", safe_name, platform)
         is_youtube_stream = platform == "YouTube" or "googlevideo.com" in raw_stream_url
@@ -948,9 +991,7 @@ async def download_video(
                 "Accept-Encoding": "identity",
                 "Connection": "keep-alive"
             }
-            if is_youtube_stream:
-                proxy_headers["User-Agent"] = "com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip"
-            elif "cdninstagram.com" in raw_stream_url or "fbcdn.net" in raw_stream_url:
+            if "cdninstagram.com" in raw_stream_url or "fbcdn.net" in raw_stream_url:
                 proxy_headers["Referer"] = "https://www.instagram.com/"
             elif "twimg.com" in raw_stream_url:
                 proxy_headers["Referer"] = "https://twitter.com/"
@@ -964,33 +1005,38 @@ async def download_video(
             if proxy_resp.status_code >= 400:
                 await proxy_resp.aclose()
                 await proxy_client.aclose()
-                logger.warning("Upstream direct stream failed with HTTP %d, falling back to redirect", proxy_resp.status_code)
-                return RedirectResponse(url=raw_stream_url, status_code=302)
+                logger.warning("Upstream direct stream failed with HTTP %d for %s", proxy_resp.status_code, platform)
+                if not is_youtube_stream:
+                    return RedirectResponse(url=raw_stream_url, status_code=302)
+                # If YouTube stream failed (e.g. expired URL), fall through to fresh resolution
+                raw_stream_url = None
+            else:
+                cl = proxy_resp.headers.get("content-length")
+                ct = proxy_resp.headers.get("content-type") or "video/mp4"
 
-            cl = proxy_resp.headers.get("content-length")
-            ct = proxy_resp.headers.get("content-type") or "video/mp4"
+                async def _proxy_streamer():
+                    try:
+                        async for chunk in proxy_resp.aiter_bytes(131072):
+                            yield chunk
+                    finally:
+                        await proxy_resp.aclose()
+                        await proxy_client.aclose()
 
-            async def _proxy_streamer():
-                try:
-                    async for chunk in proxy_resp.aiter_bytes(131072):
-                        yield chunk
-                finally:
-                    await proxy_resp.aclose()
-                    await proxy_client.aclose()
+                resp_hdrs = {
+                    "Content-Disposition": f'attachment; filename="{safe_name}"',
+                    "Content-Type": ct,
+                    "Access-Control-Allow-Origin": "*",
+                    "Accept-Ranges": "bytes"
+                }
+                if cl:
+                    resp_hdrs["Content-Length"] = cl
 
-            resp_hdrs = {
-                "Content-Disposition": f'attachment; filename="{safe_name}"',
-                "Content-Type": ct,
-                "Access-Control-Allow-Origin": "*",
-                "Accept-Ranges": "bytes"
-            }
-            if cl:
-                resp_hdrs["Content-Length"] = cl
-
-            return StreamingResponse(_proxy_streamer(), media_type=ct, headers=resp_hdrs)
+                return StreamingResponse(_proxy_streamer(), media_type=ct, headers=resp_hdrs)
         except Exception as e:
-            logger.warning("Proxy stream failed (%s), falling back to redirect", e)
-            return RedirectResponse(url=raw_stream_url, status_code=302)
+            logger.warning("Proxy stream failed (%s)", e)
+            if not is_youtube_stream:
+                return RedirectResponse(url=raw_stream_url, status_code=302)
+            raw_stream_url = None
 
     if not target_url:
         return JSONResponse(status_code=400, content={"error": "URL is required for download"})
@@ -1103,60 +1149,71 @@ async def download_video(
                 logger.warning("Facebook stream proxy failed (%s), redirecting", e_fb)
                 return RedirectResponse(url=d_url, status_code=302)
 
-    # 6. Resolve stream URL via yt-dlp
-    cf = _write_cookie_file()
-    h = int(quality[:-1]) if quality.endswith("p") and quality[:-1].isdigit() else 720
-    opts: Dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "socket_timeout": 20,
-        "format": f"best[height<={h}][ext=mp4]/bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/best[height<={h}]/best",
-        "merge_output_format": "mp4",
-        "http_headers": {
-            "User-Agent": BROWSER_UA,
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-    }
-    if cf:
-        opts["cookiefile"] = cf
-    if platform == "YouTube":
-        opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios"]}}
-    elif platform == "Instagram":
-        opts["http_headers"]["User-Agent"] = MOBILE_UA
-        opts["http_headers"]["X-IG-App-ID"] = "936619743392459"
-
+    # 6. Resolve stream URL (Fast Invidious first for YouTube, then yt-dlp visionos fallback)
     stream_url = None
-    try:
-        def _get_stream():
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(target_url, download=False)
-                rf = info.get("requested_formats")
-                if rf and isinstance(rf, list) and len(rf) > 0:
-                    return rf[0].get("url") or info.get("url")
-                return info.get("url")
+    if platform == "YouTube" and target_url:
+        logger.info("Resolving YouTube stream via Invidious for download: %s", target_url)
+        try:
+            inv = await extract_youtube_invidious(target_url)
+            if inv:
+                if inv.get("qualities"):
+                    target_h = int(quality[:-1]) if quality.endswith("p") and quality[:-1].isdigit() else 720
+                    q_match = next((q["direct_url"] for q in inv["qualities"] if q.get("height") == target_h and q.get("direct_url")), None)
+                    if not q_match:
+                        q_match = inv["qualities"][0].get("direct_url")
+                    stream_url = q_match or inv.get("direct_stream_url")
+                else:
+                    stream_url = inv.get("direct_stream_url")
+        except Exception as e_inv:
+            logger.warning("Invidious resolution failed in download endpoint: %s", e_inv)
 
-        stream_url = await asyncio.to_thread(_get_stream)
-    except Exception as e:
-        logger.error("Download extraction failed for %s: %s", target_url, e)
+    if not stream_url:
+        cf = _write_cookie_file()
+        h = int(quality[:-1]) if quality.endswith("p") and quality[:-1].isdigit() else 720
+        opts: Dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 15,
+            "format": f"best[height<={h}][ext=mp4]/bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/best[height<={h}]/best",
+            "merge_output_format": "mp4",
+            "http_headers": {
+                "User-Agent": BROWSER_UA,
+                "Accept-Language": "en-US,en;q=0.9"
+            }
+        }
+        if cf:
+            opts["cookiefile"] = cf
+        if platform == "YouTube":
+            opts["extractor_args"] = {"youtube": {"player_client": ["visionos", "mweb", "ios"]}}
+        elif platform == "Instagram":
+            opts["http_headers"]["User-Agent"] = MOBILE_UA
+            opts["http_headers"]["X-IG-App-ID"] = "936619743392459"
+
+        try:
+            def _get_stream():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(target_url, download=False)
+                    rf = info.get("requested_formats")
+                    if rf and isinstance(rf, list) and len(rf) > 0:
+                        return rf[0].get("url") or info.get("url")
+                    return info.get("url")
+
+            stream_url = await asyncio.wait_for(asyncio.to_thread(_get_stream), timeout=15.0)
+        except Exception as e:
+            logger.error("Download extraction failed for %s: %s", target_url, e)
 
     if stream_url:
-        # CRITICAL: YouTube CDN URLs (googlevideo.com) are IP-bound.
-        # The URL was extracted on Render's server IP. If we redirect the Android
-        # phone to this URL, YouTube returns 403 (IP mismatch).
-        # FIX: Always proxy YouTube streams server-side. For other platforms,
-        # respect the `redirect` param as before.
         should_redirect = redirect and platform != "YouTube"
         if should_redirect:
             return RedirectResponse(url=stream_url, status_code=302)
 
-        # Proxy the stream — server fetches bytes, sends to phone
         yt_headers = {
-            "User-Agent": "com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip",
+            "User-Agent": BROWSER_UA,
             "Accept": "*/*",
             "Accept-Encoding": "identity",
             "Connection": "keep-alive",
-        } if platform == "YouTube" else {"User-Agent": BROWSER_UA, "Accept": "*/*"}
+        }
 
         try:
             p6_client = httpx.AsyncClient(timeout=180.0, follow_redirects=True)
@@ -1166,7 +1223,12 @@ async def download_video(
             if p6_resp.status_code >= 400:
                 await p6_resp.aclose()
                 await p6_client.aclose()
-                return RedirectResponse(url=stream_url, status_code=302)
+                if platform != "YouTube":
+                    return RedirectResponse(url=stream_url, status_code=302)
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Upstream video stream unavailable (status {p6_resp.status_code})."}
+                )
 
             cl6 = p6_resp.headers.get("content-length")
             ct6 = p6_resp.headers.get("content-type") or "video/mp4"
@@ -1190,10 +1252,11 @@ async def download_video(
 
             return StreamingResponse(_p6_streamer(), media_type=ct6, headers=resp_hdrs6)
         except Exception as p6_err:
-            logger.warning("Path 6 stream failed (%s), redirecting", p6_err)
-            return RedirectResponse(url=stream_url, status_code=302)
+            logger.warning("Path 6 stream failed (%s)", p6_err)
+            if platform != "YouTube":
+                return RedirectResponse(url=stream_url, status_code=302)
 
     return JSONResponse(
-        status_code=502,
-        content={"error": f"Failed to generate download stream for {platform} video."}
+        status_code=400,
+        content={"error": f"Failed to generate download stream for {platform} video. Please try again."}
     )
