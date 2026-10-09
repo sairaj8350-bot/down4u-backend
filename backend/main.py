@@ -932,7 +932,7 @@ async def get_info(url: str = Query(...)):
             task.cancel()
             try:
                 await task
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 pass
 
         # If first done failed, check remaining
