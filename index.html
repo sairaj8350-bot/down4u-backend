@@ -1633,20 +1633,23 @@
           const qualList = (data.qualities || []).map(q => {
             if (typeof q === 'object' && q !== null) {
               const lbl = q.label || (q.height ? `${q.height}p` : 'HD');
+              const fallbackDirect = data.direct_stream_url ? '&direct_url=' + encodeURIComponent(data.direct_stream_url) : '';
               return {
                 label: lbl,
                 height: q.height || (parseInt(lbl) || 720),
-                downloadUrl: q.downloadUrl ? formatApiUrl(q.downloadUrl) : formatApiUrl('/api/download?url=' + encodeURIComponent(url) + '&quality=' + encodeURIComponent(lbl) + '&redirect=true'),
+                downloadUrl: q.downloadUrl ? formatApiUrl(q.downloadUrl) : formatApiUrl('/api/download?url=' + encodeURIComponent(url) + '&quality=' + encodeURIComponent(lbl) + fallbackDirect + '&redirect=true'),
                 direct_url: q.direct_url || data.direct_stream_url || ''
               };
             }
             const qStr = String(q);
+            const fallbackDirect2 = data.direct_stream_url ? '&direct_url=' + encodeURIComponent(data.direct_stream_url) : '';
             return {
               label: qStr,
               height: parseInt(qStr) || 720,
               downloadUrl: formatApiUrl('/api/download?url=' + encodeURIComponent(url) +
                 '&quality=' + encodeURIComponent(qStr) +
                 (qualDetails[qStr] ? '&format_id=' + encodeURIComponent(qualDetails[qStr].format_id) : '') +
+                fallbackDirect2 +
                 '&redirect=true'),
               direct_url: data.direct_stream_url || ''
             };

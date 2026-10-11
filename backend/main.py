@@ -1164,24 +1164,41 @@ async def download_video(
                 safe_name, redirect_fallback=True, redirect_url=d_url
             )
 
-    # ── YouTube stream resolution: Invidious first (with timeout), then yt-dlp ──
+    # ── YouTube stream resolution: Invidious || Piped parallel race, then yt-dlp ──
     stream_url = None
     if platform == "YouTube" and target_url:
-        logger.info("Resolving YouTube stream via Invidious for download: %s", target_url)
+        logger.info("Resolving YouTube stream for download: %s quality=%s", target_url, quality)
+        target_h = int(quality[:-1]) if quality.endswith("p") and quality[:-1].isdigit() else 720
         try:
-            inv = await asyncio.wait_for(extract_youtube_invidious(target_url), timeout=5.0)
-            if inv:
-                target_h = int(quality[:-1]) if quality.endswith("p") and quality[:-1].isdigit() else 720
-                q_match = next(
-                    (q["direct_url"] for q in inv.get("qualities", [])
-                     if q.get("height") == target_h and q.get("direct_url")),
-                    None
-                )
-                if not q_match and inv.get("qualities"):
-                    q_match = inv["qualities"][0].get("direct_url")
-                stream_url = q_match or inv.get("direct_stream_url")
-        except Exception as e_inv:
-            logger.warning("Invidious resolution failed in download endpoint: %s", e_inv)
+            inv_task = asyncio.create_task(extract_youtube_invidious(target_url))
+            piped_task = asyncio.create_task(extract_youtube_piped(target_url))
+            done, pending = await asyncio.wait([inv_task, piped_task], return_when=asyncio.FIRST_COMPLETED, timeout=6.0)
+
+            for task in list(done):
+                try:
+                    res = task.result()
+                    if res:
+                        q_match = next(
+                            (q["direct_url"] for q in res.get("qualities", [])
+                             if q.get("height") == target_h and q.get("direct_url")),
+                            None
+                        )
+                        if not q_match and res.get("qualities"):
+                            q_match = res["qualities"][0].get("direct_url")
+                        stream_url = q_match or res.get("direct_stream_url")
+                        if stream_url:
+                            break
+                except (Exception, asyncio.CancelledError):
+                    pass
+
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (Exception, asyncio.CancelledError):
+                    pass
+        except Exception as e_race:
+            logger.warning("Fast resolver race failed in download: %s", e_race)
 
     if not stream_url:
         cf = _write_cookie_file()
@@ -1201,7 +1218,7 @@ async def download_video(
         if cf:
             opts["cookiefile"] = cf
         if platform == "YouTube":
-            opts["extractor_args"] = {"youtube": {"player_client": ["visionos", "mweb", "ios"]}}
+            opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios", "mweb", "web"]}}
         elif platform == "Instagram":
             opts["http_headers"]["User-Agent"] = MOBILE_UA
             opts["http_headers"]["X-IG-App-ID"] = "936619743392459"
@@ -1241,7 +1258,14 @@ async def download_video(
             redirect_url=stream_url if platform != "YouTube" else None,
         )
 
+    # Final emergency fallback: redirect to target_url or return clear actionable error
+    logger.error("Could not obtain video stream for %s (platform=%s)", target_url, platform)
     return JSONResponse(
         status_code=400,
-        content={"error": f"Failed to generate download stream for {platform} video. Please try again."}
+        content={
+            "success": False,
+            "status": "error",
+            "error": f"Unable to stream {platform} video directly. The link might be expired or restricted.",
+            "target_url": target_url
+        }
     )
