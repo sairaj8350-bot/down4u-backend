@@ -96,54 +96,69 @@ async def extract_tiktok(url: str) -> Optional[Dict[str, Any]]:
             "Accept": "application/json, text/plain, */*",
         }
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            res = await client.post("https://www.tikwm.com/api/", data={"url": url}, headers=headers)
-            if res.status_code == 200:
-                d = res.json()
-                if d.get("code") == 0 and d.get("data"):
-                    data = d["data"]
-                    title = data.get("title") or "TikTok Video"
-                    direct_mp4 = data.get("play") or data.get("wmplay")
-                    cover = data.get("cover") or data.get("origin_cover")
-                    duration_sec = data.get("duration", 0)
-                    size_bytes = data.get("size", 0)
-                    size_str = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "HD MP4"
-                    safe_name = f"{_sanitize_title(title)}_TikTok.mp4"
+            target_tiktok_url = url
+            # Resolve short URLs if needed (vm.tiktok.com, vt.tiktok.com)
+            if "vm.tiktok.com" in url or "vt.tiktok.com" in url or "m.tiktok.com" in url:
+                try:
+                    head_res = await client.head(url)
+                    if head_res.url:
+                        target_tiktok_url = str(head_res.url)
+                except Exception as exp_err:
+                    logger.debug("TikTok short URL expand error: %s", exp_err)
 
-                    encoded_url = urllib.parse.quote(url, safe="")
-                    encoded_stream = urllib.parse.quote(direct_mp4, safe="")
+            endpoints = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"]
+            for ep in endpoints:
+                try:
+                    res = await client.post(ep, data={"url": target_tiktok_url}, headers=headers)
+                    if res.status_code == 200:
+                        d = res.json()
+                        if d.get("code") == 0 and d.get("data"):
+                            data = d["data"]
+                            title = data.get("title") or "TikTok Video"
+                            direct_mp4 = data.get("play") or data.get("wmplay")
+                            cover = data.get("cover") or data.get("origin_cover")
+                            duration_sec = data.get("duration", 0)
+                            size_bytes = data.get("size", 0)
+                            size_str = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "HD MP4"
+                            safe_name = f"{_sanitize_title(title)}_TikTok.mp4"
 
-                    qualities = [
-                        {
-                            "label": "HD No Watermark",
-                            "height": 720,
-                            "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
-                            "direct_url": direct_mp4
-                        }
-                    ]
-                    if data.get("wmplay"):
-                        qualities.append({
-                            "label": "Standard (Watermark)",
-                            "height": 540,
-                            "downloadUrl": f"/api/download?url={encoded_url}&direct_url={urllib.parse.quote(data['wmplay'], safe='')}&filename={urllib.parse.quote(safe_name, safe='')}",
-                            "direct_url": data["wmplay"]
-                        })
+                            encoded_url = urllib.parse.quote(url, safe="")
+                            encoded_stream = urllib.parse.quote(direct_mp4, safe="")
 
-                    return {
-                        "success": True,
-                        "status": "success",
-                        "platform": "TikTok",
-                        "title": title,
-                        "thumbnail": cover,
-                        "duration": _format_duration(duration_sec),
-                        "size": size_str,
-                        "mediaType": "video",
-                        "fileExt": "mp4",
-                        "filename": safe_name,
-                        "downloadUrl": qualities[0]["downloadUrl"],
-                        "qualities": qualities,
-                        "direct_stream_url": direct_mp4,
-                        "engine": "tikwm"
-                    }
+                            qualities = [
+                                {
+                                    "label": "HD No Watermark",
+                                    "height": 720,
+                                    "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
+                                    "direct_url": direct_mp4
+                                }
+                            ]
+                            if data.get("wmplay"):
+                                qualities.append({
+                                    "label": "Standard (Watermark)",
+                                    "height": 540,
+                                    "downloadUrl": f"/api/download?url={encoded_url}&direct_url={urllib.parse.quote(data['wmplay'], safe='')}&filename={urllib.parse.quote(safe_name, safe='')}",
+                                    "direct_url": data["wmplay"]
+                                })
+
+                            return {
+                                "success": True,
+                                "status": "success",
+                                "platform": "TikTok",
+                                "title": title,
+                                "thumbnail": cover,
+                                "duration": _format_duration(duration_sec),
+                                "size": size_str,
+                                "mediaType": "video",
+                                "fileExt": "mp4",
+                                "filename": safe_name,
+                                "downloadUrl": qualities[0]["downloadUrl"],
+                                "qualities": qualities,
+                                "direct_stream_url": direct_mp4,
+                                "engine": "tikwm"
+                            }
+                except Exception as ep_err:
+                    logger.debug("TikWM endpoint %s failed: %s", ep, ep_err)
     except Exception as e:
         logger.warning("TikWM extraction error: %s", e)
     return None
@@ -826,7 +841,7 @@ async def lifespan(app: FastAPI):
     logger.info("Down4U Backend stopping.")
 
 
-app = FastAPI(title="Down4U Pro API", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="Down4U Pro API", version="5.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -845,7 +860,7 @@ async def health():
     return {
         "status": "online",
         "app": "Down4U Pro Video Downloader",
-        "version": "5.0.0",
+        "version": "5.2.0",
         "engines": ["TikWM", "Invidious", "Piped", "FxTwitter", "yt-dlp", "oEmbed"],
         "cookies": bool(os.environ.get(COOKIES_ENV))
     }

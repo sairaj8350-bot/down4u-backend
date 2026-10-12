@@ -309,7 +309,7 @@ public class MainActivity extends BridgeActivity {
         if (targetUrl.contains("instagram.com/reel/") || targetUrl.contains("instagram.com/p/") || targetUrl.contains("instagram.com/tv/")) {
             String shortcode = extractInstagramShortcode(targetUrl);
             if (shortcode != null) {
-                loadUrl = "https://www.instagram.com/reel/" + shortcode + "/embed/captioned/";
+                loadUrl = "https://www.instagram.com/reel/" + shortcode + "/";
             }
         }
 
@@ -339,7 +339,7 @@ public class MainActivity extends BridgeActivity {
                                 headlessWebView.stopLoading();
                                 headlessWebView.destroy();
                             } catch (Exception ignored) {}
-                                headlessWebView = null;
+                            headlessWebView = null;
                         }
                         notifyJsSnifferSuccess(reqUrl);
                         startNativeOkHttpDownload(reqUrl, safeFilename, cleanTitle, "video/mp4");
@@ -354,7 +354,11 @@ public class MainActivity extends BridgeActivity {
                 view.evaluateJavascript(
                     "(function() {" +
                     "  var v = document.querySelector('video');" +
-                    "  if (v && v.src && v.src.indexOf('http') === 0) return v.src;" +
+                    "  if (v) {" +
+                    "    v.muted = true;" +
+                    "    try { v.play(); } catch(e) {}" +
+                    "    if (v.src && v.src.indexOf('http') === 0) return v.src;" +
+                    "  }" +
                     "  var s = document.querySelector('video source');" +
                     "  if (s && s.src && s.src.indexOf('http') === 0) return s.src;" +
                     "  return '';" +

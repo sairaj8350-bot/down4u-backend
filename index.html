@@ -2006,10 +2006,10 @@
 
     // ── Headless In-App Native Sniffer Callbacks ──────────────────────────────
     window.onSnifferStatus = function(msg) {
-      const contentArea = document.getElementById('mediaContentArea');
+      const contentArea = document.getElementById('contentArea') || document.getElementById('mediaContentArea');
       if (!contentArea) return;
       contentArea.innerHTML = `
-        <div class="result-card">
+        <div class="app-card">
           <div class="state-loading">
             <div class="spinner"></div>
             <div class="loading-title">Direct In-App Extraction</div>
