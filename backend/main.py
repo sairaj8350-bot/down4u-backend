@@ -1020,6 +1020,8 @@ async def get_info(url: str = Query(...)):
             size_str = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "HD MP4"
 
             encoded_url = urllib.parse.quote(url)
+            # YouTube CDN URLs are IP-bound to Render server — always proxy, never expose to client
+            is_yt = (platform == "YouTube")
             qualities = []
             for h in usable_heights:
                 f_match = next(
@@ -1029,13 +1031,26 @@ async def get_info(url: str = Query(...)):
                 if not f_match:
                     f_match = next((f for f in formats if f.get("height") == h and f.get("url")), None)
                 d_url = f_match.get("url") if f_match else (stream_url or "")
+                if is_yt:
+                    # Force server-side proxy; do NOT expose IP-bound googlevideo URL to device
+                    dl_url = (
+                        f"/api/download?url={encoded_url}&quality={h}p"
+                        f"&filename={urllib.parse.quote(safe_name)}&redirect=false"
+                        + (f"&direct_url={urllib.parse.quote(d_url, safe='')}" if d_url else "")
+                    )
+                    exposed_direct = None  # hide from client — IP-bound, would 403 on device
+                else:
+                    dl_url = (
+                        f"/api/download?url={encoded_url}&quality={h}p"
+                        f"&filename={urllib.parse.quote(safe_name)}"
+                        + (f"&direct_url={urllib.parse.quote(d_url, safe='')}" if d_url else "")
+                    )
+                    exposed_direct = d_url
                 qualities.append({
                     "label": f"{h}p {'Full HD' if h >= 1080 else 'HD' if h >= 720 else 'SD'}",
                     "height": h,
-                    "downloadUrl": f"/api/download?url={encoded_url}&quality={h}p"
-                                   f"&filename={urllib.parse.quote(safe_name)}"
-                                   + (f"&direct_url={urllib.parse.quote(d_url, safe='')}" if d_url else ""),
-                    "direct_url": d_url
+                    "downloadUrl": dl_url,
+                    "direct_url": exposed_direct
                 })
 
             return JSONResponse(content={
@@ -1051,7 +1066,8 @@ async def get_info(url: str = Query(...)):
                 "filename": safe_name,
                 "downloadUrl": qualities[0]["downloadUrl"] if qualities else "",
                 "qualities": qualities,
-                "direct_stream_url": stream_url,
+                # YouTube: hide IP-bound CDN URL — client must use /api/download proxy
+                "direct_stream_url": None if is_yt else stream_url,
                 "engine": "yt-dlp"
             })
         except Exception as parse_err:

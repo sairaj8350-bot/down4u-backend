@@ -1708,7 +1708,10 @@
               window.AndroidDownloader.sniffAndDownload(url, 'Video');
               return;
             }
-            renderErrorResult(err.message || 'Could not connect to video server. Please check your internet.');
+            const errDetail = 'Platform: ' + detectPlatform(url) + '\nURL: ' + url.substring(0, 80)
+              + '\nError: ' + (err.message || 'Unknown error');
+            renderErrorResult(err.message || 'Could not connect to video server. Please check your internet.',
+              errDetail);
           }
         } finally {
           mainBtn.disabled = false;
@@ -1849,8 +1852,16 @@
       }
     }
 
-    // Render Error State
-    function renderErrorResult(message) {
+    // ── Render Error State (with expandable Details panel) ──────────────────
+    function renderErrorResult(message, details) {
+      const shortMsg  = message || 'Could not extract video';
+      const detailStr = details  || '';
+      const detailsHtml = detailStr
+        ? `<details style="margin-top:8px;text-align:left;">
+             <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">▶ Details</summary>
+             <pre style="font-size:11px;white-space:pre-wrap;word-break:break-all;color:var(--text-muted);margin-top:4px;">${escapeHtml(detailStr)}</pre>
+           </details>`
+        : '';
       document.getElementById('contentArea').innerHTML = `
         <div class="app-card">
           <div class="error-box">
@@ -1859,22 +1870,64 @@
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
               </svg>
             </div>
-            <div class="error-title">Could Not Extract Video</div>
-            <div class="error-msg">${escapeHtml(message)}</div>
-            <button class="btn-input-action" onclick="focusInput()" style="margin-top:6px;">Try Another Link</button>
+            <div class="error-title">Download Failed</div>
+            <div class="error-msg">${escapeHtml(shortMsg)}</div>
+            ${detailsHtml}
+            <button class="btn-input-action" onclick="focusInput()" style="margin-top:8px;">Try Another Link</button>
           </div>
         </div>
       `;
     }
 
-    // Start Downloading Video Stream via Client-side Native Trigger
-    function startDownloadStream() {
-      // For YouTube, googlevideo.com URLs are IP-bound to server. Must use currentDirectUrl (proxy endpoint)
-      let targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
-      const isYouTube = (currentVideoData && currentVideoData.platform === 'YouTube') || (targetDlUrl && targetDlUrl.includes('googlevideo.com'));
-      if (isYouTube && currentDirectUrl) {
-        targetDlUrl = currentDirectUrl;
+    // ── Start Downloading — re-resolve fresh URL every time for YouTube ─────
+    async function startDownloadStream() {
+      // Determine download URL
+      // For YouTube: googlevideo.com URLs are IP-bound to the server that extracted them.
+      // We MUST re-call /api/info each time to get a fresh URL that matches the device's IP.
+      const isYouTube = (currentVideoData && currentVideoData.platform === 'YouTube')
+        || (currentDirectStreamUrl && currentDirectStreamUrl.includes('googlevideo.com'))
+        || (currentDirectUrl && currentDirectUrl.includes('googlevideo.com'));
+
+      let targetDlUrl;
+
+      if (isYouTube) {
+        // Re-resolve fresh YouTube URL from backend — never reuse stale Render URL
+        const srcUrl = document.getElementById('urlInput').value.trim();
+        if (srcUrl) {
+          try {
+            const progressStatus = document.getElementById('progressStatus');
+            if (progressStatus) progressStatus.textContent = 'Fetching fresh download link...';
+            const apiUrl = formatApiUrl('/api/info?url=' + encodeURIComponent(srcUrl));
+            const r = await fetch(apiUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
+            const d = await r.json();
+            if (r.ok && d.status === 'success') {
+              // Pick the highest quality direct_url (not Render proxy URL)
+              const quals = d.qualities || [];
+              const best = quals[quals.length - 1];
+              const freshDirect = (best && best.direct_url) ? best.direct_url : d.direct_stream_url;
+              if (freshDirect) {
+                targetDlUrl = freshDirect;
+                currentDirectStreamUrl = freshDirect;
+                console.log('[Down4U] Fresh YouTube direct URL obtained:', freshDirect.substring(0, 80) + '...');
+              } else {
+                // Fallback: use Render redirect URL
+                targetDlUrl = (best && best.downloadUrl) ? formatApiUrl(best.downloadUrl) : currentDirectUrl;
+              }
+            } else {
+              targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
+            }
+          } catch (e) {
+            console.warn('[Down4U] Failed to re-resolve fresh URL, using cached:', e);
+            targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
+          }
+        } else {
+          targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
+        }
+      } else {
+        // Non-YouTube: direct CDN URL is fine, use direct_stream_url
+        targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
       }
+
       if (!targetDlUrl) return;
 
       // Unity Interstitial Ad - FULLY non-blocking, never interrupts download
@@ -1990,17 +2043,94 @@
         if (startDlBtn)    { startDlBtn.disabled = false; startDlBtn.style.background = '#00875A'; }
         if (startDlLabel)  { startDlLabel.textContent = '✓ Saved to Gallery (Tap to Re-download)'; }
       } else {
-        // Download failed
+        // Download failed — show retry button that re-resolves fresh URL
         if (progressBarFill) {
           progressBarFill.style.width = '100%';
           progressBarFill.style.background = '#EF4444';
         }
         if (progressPercent) progressPercent.textContent = '!';
-        if (progressStatus)  progressStatus.textContent  = '❌ Download Failed. Please retry.';
-        if (progressSpeed)   progressSpeed.textContent   = 'Check your internet connection';
+        if (progressStatus)  progressStatus.textContent  = '❌ Download Failed';
+        if (progressSpeed)   progressSpeed.textContent   = 'Tap retry to get a fresh link';
         if (progressBytes)   progressBytes.textContent   = '';
         if (startDlBtn)    { startDlBtn.disabled = false; }
-        if (startDlLabel)  { startDlLabel.textContent = '↻ Retry Download'; }
+        if (startDlLabel)  { startDlLabel.textContent = '↻ Retry (Fresh Link)'; }
+      }
+    };
+
+    // ── Native Error callback — detailed HTTP status + description ──────────
+    // Called by MainActivity.notifyJsDownloadError()
+    window.onNativeDownloadError = function(message, code, httpStatus) {
+      const progressBarFill = document.getElementById('progressBarFill');
+      const progressPercent = document.getElementById('progressPercent');
+      const progressStatus  = document.getElementById('progressStatus');
+      const progressSpeed   = document.getElementById('progressSpeed');
+      const progressBytes   = document.getElementById('progressBytes');
+      const startDlBtn      = document.getElementById('startDlBtn');
+      const startDlLabel    = document.getElementById('startDlLabel');
+
+      if (progressBarFill) {
+        progressBarFill.style.width = '100%';
+        progressBarFill.style.background = '#EF4444';
+      }
+
+      // User-friendly HTTP status descriptions
+      let friendlyMsg = message;
+      if (httpStatus === 400) friendlyMsg = 'HTTP 400 — Expired Link. Tap retry for a fresh link.';
+      else if (httpStatus === 403) friendlyMsg = 'HTTP 403 — Forbidden. Video may be region-locked.';
+      else if (httpStatus === 404) friendlyMsg = 'HTTP 404 — Video Not Found. It may be deleted.';
+      else if (httpStatus === 410) friendlyMsg = 'HTTP 410 — Video Removed. The link is gone.';
+      else if (httpStatus === 429) friendlyMsg = 'HTTP 429 — Rate Limited. Please wait and retry.';
+      else if (httpStatus >= 500) friendlyMsg = 'HTTP ' + httpStatus + ' — Server Error. Try again.';
+
+      if (progressPercent) progressPercent.textContent = '!';
+      if (progressStatus)  progressStatus.textContent  = '❌ ' + friendlyMsg;
+      if (progressSpeed)   progressSpeed.textContent   = 'Error code: ' + (code || 'UNKNOWN');
+      if (progressBytes)   progressBytes.textContent   = httpStatus ? 'HTTP ' + httpStatus : '';
+      if (startDlBtn)    { startDlBtn.disabled = false; }
+      if (startDlLabel)  { startDlLabel.textContent = '↻ Retry (Fresh Link)'; }
+      console.error('[Down4U] Download error:', code, httpStatus, message);
+    };
+
+    // ── Native Fresh URL callback — Android got HTTP 400, needs new URL ──────
+    // Called by MainActivity.notifyJsFreshUrlNeeded()
+    window.onNativeNeedsFreshUrl = async function(nextAttempt) {
+      console.log('[Down4U] HTTP 400 received — fetching fresh URL for attempt', nextAttempt);
+      const progressStatus = document.getElementById('progressStatus');
+      const startDlLabel   = document.getElementById('startDlLabel');
+      if (progressStatus) progressStatus.textContent = 'Link expired — fetching fresh URL...';
+
+      const srcUrl = document.getElementById('urlInput').value.trim();
+      if (!srcUrl) {
+        window.onNativeDownloadError('Source URL lost — please paste the link again.', 'LOST_URL', 0);
+        return;
+      }
+
+      try {
+        const apiUrl = formatApiUrl('/api/info?url=' + encodeURIComponent(srcUrl));
+        const r = await fetch(apiUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
+        const d = await r.json();
+        if (r.ok && d.status === 'success') {
+          const quals = d.qualities || [];
+          const best  = quals[quals.length - 1];
+          const freshDirect = (best && best.direct_url) ? best.direct_url
+                            : d.direct_stream_url || '';
+          if (freshDirect) {
+            currentDirectStreamUrl = freshDirect;
+            console.log('[Down4U] Got fresh URL, passing to Android for retry', nextAttempt);
+            const cleanFilename = currentFilename || 'Down4U_Video.mp4';
+            const cleanTitle = (currentVideoData && currentVideoData.title) || 'Video Download';
+            if (progressStatus) progressStatus.textContent = 'Retrying with fresh link...';
+            if (window.AndroidDownloader && typeof window.AndroidDownloader.downloadVideo === 'function') {
+              window.AndroidDownloader.downloadVideo(freshDirect, cleanFilename, cleanTitle);
+            }
+          } else {
+            window.onNativeDownloadError('Could not get a fresh download link from server.', 'NO_DIRECT_URL', 0);
+          }
+        } else {
+          window.onNativeDownloadError(d.message || 'Server could not extract fresh link.', 'SERVER_ERROR', r.status);
+        }
+      } catch (e) {
+        window.onNativeDownloadError('Network error while fetching fresh link: ' + e.message, 'NETWORK', 0);
       }
     };
 
