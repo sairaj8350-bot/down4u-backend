@@ -242,7 +242,7 @@ async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
                         "label": f"{h}p {'HD' if h >= 720 else 'SD'}",
                         "height": h,
                         "downloadUrl": dl_url,
-                        "direct_url": stream_url
+                        "direct_url": None  # IP-bound Piped URL — hidden from client to prevent HTTP 400
                     })
                     if len(qualities) >= 4:
                         break
@@ -250,7 +250,6 @@ async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
                 if not qualities:
                     continue
 
-                best_stream = muxed[0].get("url") if muxed else None
                 logger.info("YouTube extracted via Piped instance: %s (video_id=%s)", instance, vid_id)
                 return {
                     "success": True,
@@ -266,7 +265,7 @@ async def extract_youtube_piped(url: str) -> Optional[Dict[str, Any]]:
                     "uploader": uploader,
                     "downloadUrl": qualities[0]["downloadUrl"],
                     "qualities": qualities,
-                    "direct_stream_url": best_stream,
+                    "direct_stream_url": None,  # Never expose IP-bound Piped URL — use /api/download proxy
                     "engine": "youtube-piped"
                 }
         except Exception:
@@ -344,7 +343,7 @@ async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
                         "label": f"{h}p {'HD' if h >= 720 else 'SD'}",
                         "height": h,
                         "downloadUrl": dl_url,
-                        "direct_url": stream_url
+                        "direct_url": None  # IP-bound Invidious URL — hidden from client to prevent HTTP 400
                     })
 
                 # Add adaptive mp4 streams (e.g. 720p, 1080p)
@@ -371,14 +370,13 @@ async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
                         "label": f"{h}p {'Full HD' if h >= 1080 else 'HD' if h >= 720 else 'SD'}",
                         "height": h,
                         "downloadUrl": dl_url,
-                        "direct_url": stream_url
+                        "direct_url": None  # IP-bound Invidious URL — hidden from client to prevent HTTP 400
                     })
 
                 if not qualities:
                     continue
 
                 qualities.sort(key=lambda q: q.get("height", 0), reverse=True)
-                best_stream = qualities[0]["direct_url"] if qualities else None
 
                 logger.info("YouTube extracted via Invidious instance: %s (video_id=%s)", instance, vid_id)
                 return {
@@ -395,7 +393,7 @@ async def extract_youtube_invidious(url: str) -> Optional[Dict[str, Any]]:
                     "uploader": uploader,
                     "downloadUrl": qualities[0]["downloadUrl"],
                     "qualities": qualities,
-                    "direct_stream_url": best_stream,
+                    "direct_stream_url": None,  # Never expose IP-bound CDN URL — client must use /api/download proxy
                     "engine": "youtube-invidious"
                 }
         except Exception as e:
