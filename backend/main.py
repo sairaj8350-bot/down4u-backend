@@ -30,22 +30,38 @@ MOBILE_UA = (
 _COOKIE_FILE_PATH: Optional[str] = None
 
 def _init_cookie_file() -> Optional[str]:
-    """Write cookie file once at startup and cache the path."""
+    """Write cookie file once at startup (merging YouTube and Instagram cookies) and cache path."""
     global _COOKIE_FILE_PATH
     if _COOKIE_FILE_PATH:
         return _COOKIE_FILE_PATH
-    raw = os.environ.get(COOKIES_ENV, "").strip()
-    if not raw:
+
+    raw_yt = os.environ.get(COOKIES_ENV, "").strip() or os.environ.get("COOKIES_TXT", "").strip()
+    raw_ig = os.environ.get("IG_COOKIES", "").strip()
+    session_id = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
+
+    if not raw_yt and not raw_ig and not session_id:
         return None
+
     try:
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-        if not raw.startswith("# Netscape"):
-            tmp.write("# Netscape HTTP Cookie File\n")
-        tmp.write(raw)
+        tmp.write("# Netscape HTTP Cookie File\n")
+        if raw_yt:
+            # Strip redundant header if present
+            yt_clean = raw_yt.replace("# Netscape HTTP Cookie File", "").strip()
+            tmp.write(yt_clean + "\n")
+        if raw_ig:
+            ig_clean = raw_ig.replace("# Netscape HTTP Cookie File", "").strip()
+            tmp.write(ig_clean + "\n")
+        if session_id:
+            # Synthesize valid Instagram session cookies
+            tmp.write(f".instagram.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\t{session_id}\n")
+            tmp.write(f".instagram.com\tTRUE\t/\tTRUE\t2147483647\tds_user_id\t0\n")
+            tmp.write(f".instagram.com\tTRUE\t/\tTRUE\t2147483647\tcsrftoken\tmissing_csrf\n")
+
         tmp.flush()
         tmp.close()
         _COOKIE_FILE_PATH = tmp.name
-        logger.info("Cookie file written and cached: %s", tmp.name)
+        logger.info("Cookie file written and cached: %s (IG session: %s)", tmp.name, bool(session_id or raw_ig))
         return tmp.name
     except Exception as e:
         logger.warning("Failed to write cookie file: %s", e)
@@ -449,87 +465,218 @@ async def extract_youtube_oembed(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-# ─── Instagram Embed & Public Scraper Engine ─────────────────────────────────
-async def extract_instagram(url: str) -> Optional[Dict[str, Any]]:
-    """Extracts public Instagram Reels, Posts, and Videos without login/cookies."""
+# ─── Instagram SnapSave Unpacker & Multi-Engine Extractor ─────────────────────
+def _decode_snapsave_packed(js_code: str) -> str:
+    """Decodes packed JS response from SnapSave API."""
     try:
-        # 1. Extract shortcode
-        match = re.search(r"/(?:reel|reels|p|tv)/([A-Za-z0-9_\-]+)", url)
-        if not match:
-            return None
-        shortcode = match.group(1)
-        embed_url = f"https://www.instagram.com/reel/{shortcode}/embed/captioned/"
-        
+        m = re.search(r'\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)', js_code)
+        if not m:
+            return ""
+        h = m.group(1)
+        u = int(m.group(2))
+        n = m.group(3)
+        t = int(m.group(4))
+        e = int(m.group(5))
+        r = int(m.group(6))
+
+        chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+        def _base_conv(d_val, e_val, f_val):
+            h_str = chars[:e_val]
+            i_str = chars[:f_val]
+            j = 0
+            for c_idx, char in enumerate(reversed(d_val)):
+                idx = h_str.find(char)
+                if idx != -1:
+                    j += idx * (e_val ** c_idx)
+            k = ""
+            while j > 0:
+                k = i_str[j % f_val] + k
+                j = (j - (j % f_val)) // f_val
+            return int(k) if k else 0
+
+        res = []
+        i = 0
+        delimiter = n[e]
+        length = len(h)
+        while i < length:
+            s = ""
+            while i < length and h[i] != delimiter:
+                s += h[i]
+                i += 1
+            i += 1
+            if s:
+                for j_idx in range(len(n)):
+                    s = s.replace(n[j_idx], str(j_idx))
+                val = _base_conv(s, e, 10) - t
+                if val > 0:
+                    res.append(chr(val))
+        out = "".join(res)
+        return urllib.parse.unquote(out)
+    except Exception as err:
+        logger.debug("SnapSave decode exception: %s", err)
+        return ""
+
+
+async def _extract_instagram_snapsave(url: str, shortcode: str) -> Optional[Dict[str, Any]]:
+    """Engine 1: SnapSave Public API."""
+    try:
+        post_data = {"url": url}
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": BROWSER_UA,
+            "Referer": "https://snapsave.app/",
+            "Origin": "https://snapsave.app",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            resp = await client.post("https://snapsave.app/action.php", data=post_data, headers=headers)
+            if resp.status_code == 200:
+                html = _decode_snapsave_packed(resp.text)
+                if html:
+                    # Look for download links
+                    video_links = re.findall(r'<a[^>]+href="([^"]+)"[^>]*download', html)
+                    if not video_links:
+                        video_links = re.findall(r'href="([^"]+)"[^>]*class="[^"]*button[^"]*download', html)
+                    if not video_links:
+                        video_links = [l for l in re.findall(r'href="([^"]+)"', html) if "token=" in l or ".mp4" in l or "cdn" in l]
+
+                    if video_links:
+                        raw_stream = video_links[0]
+                        thumb_m = re.search(r'<img[^>]+src="([^"]+)"', html)
+                        thumb = thumb_m.group(1) if thumb_m else ""
+                        safe_name = f"Instagram_Reel_{shortcode}.mp4"
+                        encoded_url = urllib.parse.quote(url, safe="")
+                        encoded_stream = urllib.parse.quote(raw_stream, safe="")
+
+                        return {
+                            "success": True,
+                            "status": "success",
+                            "platform": "Instagram",
+                            "title": f"Instagram Reel {shortcode}",
+                            "thumbnail": thumb,
+                            "duration": "",
+                            "size": "HD MP4",
+                            "mediaType": "video",
+                            "fileExt": "mp4",
+                            "filename": safe_name,
+                            "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
+                            "qualities": [
+                                {
+                                    "label": "HD (SnapSave Direct)",
+                                    "height": 720,
+                                    "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
+                                    "direct_url": raw_stream
+                                }
+                            ],
+                            "direct_stream_url": raw_stream,
+                            "engine": "snapsave-api"
+                        }
+    except Exception as e:
+        logger.debug("SnapSave extraction failed: %s", e)
+    return None
+
+
+async def _extract_instagram_embed(url: str, shortcode: str) -> Optional[Dict[str, Any]]:
+    """Engine 2: Aggressive Instagram Embed and HTML Scraper."""
+    try:
+        embed_urls = [
+            f"https://www.instagram.com/reel/{shortcode}/embed/captioned/",
+            f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
+            f"https://www.instagram.com/reel/{shortcode}/embed/",
+            f"https://www.instagram.com/p/{shortcode}/embed/"
+        ]
+        headers = {
+            "User-Agent": BROWSER_UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.instagram.com/",
         }
 
-        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-            res = await client.get(embed_url, headers=headers)
-            if res.status_code == 200:
-                html = res.text
-                
-                # Check for video URL in embed HTML
-                video_match = re.search(r'"video_url"\s*:\s*"([^"]+)"', html)
-                if not video_match:
-                    video_match = re.search(r'class="EmbeddedMediaVideo"[^>]*src="([^"]+)"', html)
-                if not video_match:
-                    # Alternative pattern inside JSON blob or window.__additionalDataLoaded
-                    video_match = re.search(r'\\?"video_url\\?"\s*:\s*\\?"([^"\\]+(?:\\.[^"\\]+)*)\\?"', html)
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            for ep in embed_urls:
+                res = await client.get(ep, headers=headers)
+                if res.status_code == 200:
+                    html = res.text
+                    raw_video_url = None
 
-                if video_match:
-                    raw_video_url = video_match.group(1).replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
-                    
-                    # Thumbnail
-                    thumb_match = re.search(r'"display_url"\s*:\s*"([^"]+)"', html)
-                    if not thumb_match:
-                        thumb_match = re.search(r'class="EmbeddedMediaImage"[^>]*src="([^"]+)"', html)
-                    thumb = (
-                        thumb_match.group(1).replace("\\u0026", "&").replace("\\/", "/")
-                        if thumb_match else ""
-                    )
-                    
-                    # Caption / Title
-                    caption_match = re.search(r'class="Caption"[^>]*>([^<]+)<', html)
-                    caption = caption_match.group(1).strip() if caption_match else f"Instagram_Reel_{shortcode}"
-                    safe_name = f"{_sanitize_title(caption, 35)}_Instagram.mp4"
+                    # Regex patterns for direct mp4 / video_url
+                    v1 = re.search(r'"video_url"\s*:\s*"([^"]+)"', html)
+                    if v1:
+                        raw_video_url = v1.group(1)
+                    if not raw_video_url:
+                        v2 = re.search(r'class="EmbeddedMediaVideo"[^>]*src="([^"]+)"', html)
+                        if v2:
+                            raw_video_url = v2.group(1)
+                    if not raw_video_url:
+                        v3 = re.search(r'\\?"video_url\\?"\s*:\s*\\?"([^"\\]+(?:\\.[^"\\]+)*)\\?"', html)
+                        if v3:
+                            raw_video_url = v3.group(1)
+                    if not raw_video_url:
+                        # Any cdn link ending with .mp4 or bytestart
+                        mp4_match = re.search(r'(https?:\\?/\\?/[^"\'\s<>]*(?:cdninstagram|fbcdn)[^"\'\s<>]*\.mp4[^"\'\s<>]*)', html)
+                        if mp4_match:
+                            raw_video_url = mp4_match.group(1)
 
-                    encoded_url = urllib.parse.quote(url, safe="")
-                    encoded_stream = urllib.parse.quote(raw_video_url, safe="")
+                    if raw_video_url:
+                        raw_video_url = raw_video_url.replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
 
-                    qualities = [
-                        {
-                            "label": "HD MP4 (Direct CDN)",
-                            "height": 720,
+                        thumb_match = re.search(r'"display_url"\s*:\s*"([^"]+)"', html) or re.search(r'class="EmbeddedMediaImage"[^>]*src="([^"]+)"', html)
+                        thumb = thumb_match.group(1).replace("\\u0026", "&").replace("\\/", "/") if thumb_match else ""
+
+                        caption_match = re.search(r'class="Caption"[^>]*>([^<]+)<', html)
+                        caption = caption_match.group(1).strip() if caption_match else f"Instagram_Reel_{shortcode}"
+                        safe_name = f"{_sanitize_title(caption, 35)}_Instagram.mp4"
+
+                        encoded_url = urllib.parse.quote(url, safe="")
+                        encoded_stream = urllib.parse.quote(raw_video_url, safe="")
+
+                        return {
+                            "success": True,
+                            "status": "success",
+                            "platform": "Instagram",
+                            "title": caption,
+                            "thumbnail": thumb,
+                            "duration": "",
+                            "size": "HD MP4",
+                            "mediaType": "video",
+                            "fileExt": "mp4",
+                            "filename": safe_name,
                             "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
-                            "direct_url": raw_video_url
+                            "qualities": [
+                                {
+                                    "label": "HD MP4 (Direct CDN)",
+                                    "height": 720,
+                                    "downloadUrl": f"/api/download?url={encoded_url}&direct_url={encoded_stream}&filename={urllib.parse.quote(safe_name, safe='')}",
+                                    "direct_url": raw_video_url
+                                }
+                            ],
+                            "direct_stream_url": raw_video_url,
+                            "engine": "instagram-embed"
                         }
-                    ]
-
-                    return {
-                        "success": True,
-                        "status": "success",
-                        "platform": "Instagram",
-                        "title": caption,
-                        "thumbnail": thumb,
-                        "duration": "",
-                        "size": "HD MP4",
-                        "mediaType": "video",
-                        "fileExt": "mp4",
-                        "filename": safe_name,
-                        "downloadUrl": qualities[0]["downloadUrl"],
-                        "qualities": qualities,
-                        "direct_stream_url": raw_video_url,
-                        "engine": "instagram-embed"
-                    }
     except Exception as e:
-        logger.warning("Instagram embed extraction error: %s", e)
+        logger.debug("Instagram embed scraper error: %s", e)
+    return None
+
+
+async def extract_instagram(url: str) -> Optional[Dict[str, Any]]:
+    """Extracts public Instagram Reels, Posts, and Videos using multi-engine fallback."""
+    # 1. Extract shortcode
+    match = re.search(r"/(?:reel|reels|p|tv)/([A-Za-z0-9_\-]+)", url)
+    if not match:
+        return None
+    shortcode = match.group(1)
+
+    # Engine 1: SnapSave API
+    res = await _extract_instagram_snapsave(url, shortcode)
+    if res:
+        logger.info("Instagram extracted via SnapSave API")
+        return res
+
+    # Engine 2: Embed and HTML regex Scraper
+    res = await _extract_instagram_embed(url, shortcode)
+    if res:
+        logger.info("Instagram extracted via Embed Scraper")
+        return res
+
     return None
 
 
@@ -748,6 +895,9 @@ def extract_ytdlp(url: str, platform: str, cookie_file: Optional[str] = None) ->
         opts["http_headers"]["User-Agent"] = MOBILE_UA
         opts["http_headers"]["X-IG-App-ID"] = "936619743392459"
         opts["http_headers"]["Referer"] = "https://www.instagram.com/"
+        session_id = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
+        if session_id:
+            opts["http_headers"]["Cookie"] = f"sessionid={session_id};"
     elif platform == "TikTok":
         # TikTok works best with mobile UA via yt-dlp fallback
         opts["http_headers"]["User-Agent"] = MOBILE_UA

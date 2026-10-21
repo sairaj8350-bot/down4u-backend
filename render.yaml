@@ -1,4 +1,4 @@
-﻿services:
+services:
   - type: web
     name: anyvideodownloader-backend
     env: python
@@ -7,6 +7,10 @@
     plan: free
     envVars:
       - key: YT_COOKIES
+        sync: false
+      - key: INSTAGRAM_SESSION_ID
+        sync: false
+      - key: IG_COOKIES
         sync: false
       - key: PYTHON_VERSION
         value: 3.11.0
