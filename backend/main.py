@@ -916,20 +916,27 @@ async def _safe_proxy_stream(
     safe_name: str,
     redirect_fallback: bool = True,
     redirect_url: Optional[str] = None,
+    range_header: Optional[str] = None,
 ):
     """
     Proxy a remote stream with guaranteed cleanup.
+    - Passes Range header through for resumable downloads and proper Content-Length
     - Uses explicit aclose() to ensure connections never leak (prevents 502 hang)
     - Upstream 4xx/5xx → clean redirect or 502 error instead of hanging
     - Sets all required headers for Android DownloadManager
     """
     actual_redirect_url = redirect_url or stream_url
+    # Pass Range header to upstream so Content-Length is correct
+    upstream_headers = dict(headers)
+    if range_header:
+        upstream_headers["Range"] = range_header
+
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=120.0),
         follow_redirects=True
     )
     try:
-        req = client.build_request("GET", stream_url, headers=headers)
+        req = client.build_request("GET", stream_url, headers=upstream_headers)
         resp = await client.send(req, stream=True)
 
         if resp.status_code >= 400:
@@ -944,7 +951,10 @@ async def _safe_proxy_stream(
             )
 
         content_length = resp.headers.get("content-length")
-        content_type = resp.headers.get("content-type") or "video/mp4"
+        content_range  = resp.headers.get("content-range")
+        content_type   = resp.headers.get("content-type") or "video/mp4"
+        # Use 206 status if upstream returned 206 (partial content for Range request)
+        status_code = resp.status_code if resp.status_code in (200, 206) else 200
 
         async def _stream_generator():
             try:
@@ -965,8 +975,15 @@ async def _safe_proxy_stream(
         }
         if content_length:
             resp_headers["Content-Length"] = content_length
+        if content_range:
+            resp_headers["Content-Range"] = content_range
 
-        return StreamingResponse(_stream_generator(), media_type=content_type, headers=resp_headers)
+        return StreamingResponse(
+            _stream_generator(),
+            status_code=status_code,
+            media_type=content_type,
+            headers=resp_headers
+        )
 
     except Exception as e:
         logger.warning("Proxy connection failed: %s", e)
@@ -1247,6 +1264,7 @@ async def get_info(url: str = Query(...)):
 @app.get("/api/download")
 @app.get("/api/stream")
 async def download_video(
+    request: Request,
     url: Optional[str] = Query(None),
     videoUrl: Optional[str] = Query(None),
     direct_url: Optional[str] = Query(None),
@@ -1260,37 +1278,39 @@ async def download_video(
     platform = detect_platform(target_url or "") if target_url else "Web"
     safe_name = filename or f"video_{platform}.mp4"
 
+    # Pass Range header through from client for resumable downloads
+    range_header = request.headers.get("Range") or request.headers.get("range")
+
     # ── FAST PATH: direct_url known — proxy or redirect (with guaranteed cleanup) ──
     if raw_stream_url:
         logger.info("[FAST] Direct CDN stream for %s platform=%s", safe_name, platform)
         is_youtube_stream = platform == "YouTube" or "googlevideo.com" in raw_stream_url
 
-        if redirect and not is_youtube_stream:
+        # Non-YouTube CDNs: ALWAYS redirect directly — never proxy through Render
+        # This avoids Render free-tier bandwidth limits and latency on TikTok/IG/Twitter
+        if not is_youtube_stream:
+            logger.info("[REDIRECT] Non-YouTube CDN → 302 redirect to %s", raw_stream_url[:80])
             return RedirectResponse(url=raw_stream_url, status_code=302)
 
+        # YouTube CDN: must proxy because URLs are IP-bound to Render's server IP
         proxy_headers = {
             "User-Agent": BROWSER_UA,
             "Accept": "*/*",
             "Accept-Encoding": "identity",
             "Connection": "keep-alive"
         }
-        if "cdninstagram.com" in raw_stream_url or "fbcdn.net" in raw_stream_url:
-            proxy_headers["Referer"] = "https://www.instagram.com/"
-        elif "twimg.com" in raw_stream_url:
-            proxy_headers["Referer"] = "https://twitter.com/"
-        elif "tiktokcdn.com" in raw_stream_url:
-            proxy_headers["Referer"] = "https://www.tiktok.com/"
 
         proxy_result = await _safe_proxy_stream(
             stream_url=raw_stream_url,
             headers=proxy_headers,
             safe_name=safe_name,
-            redirect_fallback=not is_youtube_stream,
-            redirect_url=raw_stream_url if not is_youtube_stream else None,
+            redirect_fallback=False,
+            redirect_url=None,
+            range_header=range_header,
         )
 
         # If YouTube CDN URL expired (4xx), fall through to fresh resolution
-        if is_youtube_stream and isinstance(proxy_result, JSONResponse) and proxy_result.status_code >= 400:
+        if isinstance(proxy_result, JSONResponse) and proxy_result.status_code >= 400:
             raw_stream_url = None
         else:
             return proxy_result
@@ -1298,50 +1318,26 @@ async def download_video(
     if not target_url:
         return JSONResponse(status_code=400, content={"error": "URL is required for download"})
 
-    # ── Platform-specific fast paths (all use _safe_proxy_stream) ──
+    # ── Platform-specific fast paths (all use redirect — device downloads directly) ──
     if platform == "TikTok":
         tt = await extract_tiktok(target_url)
         if tt and tt.get("direct_stream_url"):
-            d_url = tt["direct_stream_url"]
-            if redirect:
-                return RedirectResponse(url=d_url, status_code=302)
-            return await _safe_proxy_stream(
-                d_url, {"User-Agent": BROWSER_UA, "Referer": "https://www.tiktok.com/"},
-                safe_name, redirect_fallback=True, redirect_url=d_url
-            )
+            return RedirectResponse(url=tt["direct_stream_url"], status_code=302)
 
     if platform == "Instagram":
         ig = await extract_instagram(target_url)
         if ig and ig.get("direct_stream_url"):
-            d_url = ig["direct_stream_url"]
-            if redirect:
-                return RedirectResponse(url=d_url, status_code=302)
-            return await _safe_proxy_stream(
-                d_url, {"User-Agent": BROWSER_UA, "Referer": "https://www.instagram.com/"},
-                safe_name, redirect_fallback=True, redirect_url=d_url
-            )
+            return RedirectResponse(url=ig["direct_stream_url"], status_code=302)
 
     if platform == "Twitter":
         tw = await extract_twitter(target_url)
         if tw and tw.get("direct_stream_url"):
-            d_url = tw["direct_stream_url"]
-            if redirect:
-                return RedirectResponse(url=d_url, status_code=302)
-            return await _safe_proxy_stream(
-                d_url, {"User-Agent": BROWSER_UA, "Referer": "https://twitter.com/"},
-                safe_name, redirect_fallback=True, redirect_url=d_url
-            )
+            return RedirectResponse(url=tw["direct_stream_url"], status_code=302)
 
     if platform == "Facebook":
         fb = await extract_facebook(target_url)
         if fb and fb.get("direct_stream_url"):
-            d_url = fb["direct_stream_url"]
-            if redirect:
-                return RedirectResponse(url=d_url, status_code=302)
-            return await _safe_proxy_stream(
-                d_url, {"User-Agent": BROWSER_UA},
-                safe_name, redirect_fallback=True, redirect_url=d_url
-            )
+            return RedirectResponse(url=fb["direct_stream_url"], status_code=302)
 
     # ── YouTube stream resolution: Invidious || Piped parallel race, then yt-dlp ──
     stream_url = None
@@ -1435,6 +1431,7 @@ async def download_video(
             safe_name=safe_name,
             redirect_fallback=(platform != "YouTube"),
             redirect_url=stream_url if platform != "YouTube" else None,
+            range_header=range_header,
         )
 
     # Final emergency fallback: redirect to target_url or return clear actionable error

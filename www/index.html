@@ -1685,13 +1685,15 @@
             downloadUrl: defaultQuality ? defaultQuality.downloadUrl : (data.downloadUrl ? formatApiUrl(data.downloadUrl) : ''),
             direct_stream_url: defaultQuality ? (defaultQuality.direct_url || data.direct_stream_url || '') : (data.direct_stream_url || ''),
             filename: (data.title || 'Down4U_Video').replace(/[^\w\s\-]/g, '').trim() + '.mp4',
-            engine: engine
+            engine: engine,
+            _sourceUrl: url  // stored for fresh-URL retry on HTTP 400
           };
 
           currentDirectUrl = mappedData.downloadUrl;
           currentDirectStreamUrl = mappedData.direct_stream_url;
           currentFilename = mappedData.filename;
           currentVideoData = mappedData;
+          _currentOriginalUrl = url;  // also set here for immediate availability
 
           renderMediaResult(mappedData);
         } catch (err) {
@@ -1867,8 +1869,19 @@
       `;
     }
 
+    // Track original URL for fresh-URL retry
+    let _currentOriginalUrl = '';
+
     // Start Downloading Video Stream via Client-side Native Trigger
     function startDownloadStream() {
+      // Store original URL for fresh-URL retry flow
+      const urlInput = document.getElementById('urlInput');
+      if (urlInput && urlInput.value.trim()) {
+        _currentOriginalUrl = urlInput.value.trim();
+      } else if (currentVideoData && currentVideoData._sourceUrl) {
+        _currentOriginalUrl = currentVideoData._sourceUrl;
+      }
+
       // For YouTube, googlevideo.com URLs are IP-bound to server. Must use currentDirectUrl (proxy endpoint)
       let targetDlUrl = currentDirectStreamUrl || currentDirectUrl;
       const isYouTube = (currentVideoData && currentVideoData.platform === 'YouTube') || (targetDlUrl && targetDlUrl.includes('googlevideo.com'));
@@ -2002,6 +2015,76 @@
         if (startDlBtn)    { startDlBtn.disabled = false; }
         if (startDlLabel)  { startDlLabel.textContent = '↻ Retry Download'; }
       }
+    };
+
+    // ── Fresh URL Retry — called by MainActivity on HTTP 400 (expired CDN URL) ─
+    // Fetches a brand-new /api/info, picks the first quality URL and re-downloads
+    window.onNativeNeedsFreshUrl = function(nextAttempt) {
+      const originalUrl = _currentOriginalUrl;
+      if (!originalUrl) {
+        console.warn('onNativeNeedsFreshUrl: no original URL stored, cannot retry');
+        return;
+      }
+      console.log('HTTP 400 on download — fetching fresh URL for:', originalUrl, 'attempt', nextAttempt);
+
+      const progressStatus = document.getElementById('progressStatus');
+      if (progressStatus) progressStatus.textContent = 'URL expired — fetching fresh link...';
+
+      fetch(SERVER_URL + '/api/info?url=' + encodeURIComponent(originalUrl))
+        .then(r => r.json())
+        .then(data => {
+          if (!data || !data.success) {
+            console.warn('Fresh URL fetch failed:', data);
+            if (progressStatus) progressStatus.textContent = '❌ Could not refresh URL. Please retry.';
+            const startDlBtn = document.getElementById('startDlBtn');
+            if (startDlBtn) startDlBtn.disabled = false;
+            return;
+          }
+          // Pick best quality URL
+          const quals = data.qualities || [];
+          const bestQual = quals[0] || {};
+          const freshDlUrl = bestQual.downloadUrl ? formatApiUrl(bestQual.downloadUrl) : (data.downloadUrl ? formatApiUrl(data.downloadUrl) : '');
+          if (!freshDlUrl) {
+            console.warn('Fresh URL empty after re-fetch');
+            return;
+          }
+          console.log('Got fresh download URL, retrying (attempt', nextAttempt, '):', freshDlUrl);
+          if (progressStatus) progressStatus.textContent = 'Retrying with fresh link...';
+          // Retry native download with fresh URL
+          if (window.AndroidDownloader && typeof window.AndroidDownloader.downloadVideo === 'function') {
+            const fn = currentFilename || 'video.mp4';
+            const title = (currentVideoData && currentVideoData.title) || 'Video';
+            window.AndroidDownloader.downloadVideo(freshDlUrl, fn, title);
+          }
+        })
+        .catch(err => {
+          console.error('Error fetching fresh URL:', err);
+          if (progressStatus) progressStatus.textContent = '❌ Network error fetching fresh URL.';
+        });
+    };
+
+    // ── Native Download Error callback — shows error to user in progress UI ───
+    window.onNativeDownloadError = function(message, code, httpStatus) {
+      console.error('Native download error:', code, httpStatus, message);
+      const progressBarFill = document.getElementById('progressBarFill');
+      const progressPercent = document.getElementById('progressPercent');
+      const progressStatus  = document.getElementById('progressStatus');
+      const progressSpeed   = document.getElementById('progressSpeed');
+      const progressBytes   = document.getElementById('progressBytes');
+      const startDlBtn      = document.getElementById('startDlBtn');
+      const startDlLabel    = document.getElementById('startDlLabel');
+
+      if (progressBarFill) {
+        progressBarFill.style.animation = 'none';
+        progressBarFill.style.width = '100%';
+        progressBarFill.style.background = '#EF4444';
+      }
+      if (progressPercent) progressPercent.textContent = httpStatus ? httpStatus + '' : '!';
+      if (progressStatus)  progressStatus.textContent  = '❌ ' + (message || 'Download failed');
+      if (progressSpeed)   progressSpeed.textContent   = code || 'ERROR';
+      if (progressBytes)   progressBytes.textContent   = '';
+      if (startDlBtn)   { startDlBtn.disabled = false; }
+      if (startDlLabel) { startDlLabel.textContent = '↻ Retry'; }
     };
 
     // ── Headless In-App Native Sniffer Callbacks ──────────────────────────────
