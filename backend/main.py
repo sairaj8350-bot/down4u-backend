@@ -11,7 +11,8 @@ import httpx
 import yt_dlp
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("down4u")
@@ -1017,8 +1018,20 @@ app.add_middleware(
 )
 
 
-# ─── Health Checks ───────────────────────────────────────────────────────────
+# ─── Serve Web App & Health Checks ───────────────────────────────────────────
+if os.path.exists("www"):
+    app.mount("/static", StaticFiles(directory="www"), name="static")
+
 @app.get("/")
+async def home():
+    if os.path.exists("www/index.html"):
+        return FileResponse("www/index.html")
+    return {
+        "status": "online",
+        "app": "Down4U Pro Video Downloader",
+        "version": "5.2.0"
+    }
+
 @app.get("/health")
 @app.get("/api/health")
 async def health():

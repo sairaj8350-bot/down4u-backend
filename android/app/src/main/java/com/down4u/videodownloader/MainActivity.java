@@ -1,5 +1,6 @@
 package com.down4u.videodownloader;
 
+import android.app.DownloadManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -13,8 +14,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Log;
+import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
+import android.webkit.URLUtil;
 import android.webkit.WebView;
 import android.widget.Toast;
 
@@ -83,8 +86,8 @@ public class MainActivity extends BridgeActivity {
                 @Override
                 public void onDownloadStart(String url, String userAgent,
                         String contentDisposition, String mimetype, long contentLength) {
-                    startNativeOkHttpDownload(url, "video_" + System.currentTimeMillis() + ".mp4",
-                            "Video Download", mimetype, 0);
+                    String guessedName = URLUtil.guessFileName(url, contentDisposition, mimetype);
+                    launchReliableDownload(url, guessedName, "Video Download", mimetype);
                 }
             });
         }
@@ -665,6 +668,104 @@ public class MainActivity extends BridgeActivity {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Reliable Browser-Grade Downloader (Android DownloadManager + Chrome fallback)
+    // ─────────────────────────────────────────────────────────────────────────
+    public void launchReliableDownload(String url, String filename, String title, String mimeType) {
+        if (url == null || url.trim().isEmpty()) {
+            Toast.makeText(this, "Download URL is invalid", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final String finalUrl = url.trim();
+        final String safeTitle = (title != null && !title.trim().isEmpty()) ? title : "Video Download";
+        String cleanName = (filename != null && !filename.trim().isEmpty()) ? filename : "video_" + System.currentTimeMillis() + ".mp4";
+        cleanName = cleanName.replaceAll("[\\\\/:*?\"<>|]", "_");
+        if (!cleanName.toLowerCase().endsWith(".mp4") && !cleanName.toLowerCase().endsWith(".mp3") && !cleanName.toLowerCase().endsWith(".jpg")) {
+            cleanName += ".mp4";
+        }
+        final String targetFilename = cleanName;
+        final String safeMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "video/mp4";
+
+        Log.i(TAG, "Starting reliable download for: " + targetFilename + " URL: " + finalUrl);
+
+        try {
+            Uri uri = Uri.parse(finalUrl);
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm != null) {
+                DownloadManager.Request request = new DownloadManager.Request(uri);
+                request.setTitle(safeTitle);
+                request.setDescription("Downloading " + targetFilename);
+                request.setMimeType(safeMime);
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+
+                // Set destination in standard Downloads folder
+                try {
+                    request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Down4U/" + targetFilename);
+                } catch (Exception ex) {
+                    request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, targetFilename);
+                }
+
+                // Add browser-grade User-Agent and headers
+                request.addRequestHeader("User-Agent",
+                        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36");
+                request.addRequestHeader("Accept", "*/*");
+
+                if (finalUrl.contains("instagram.com") || finalUrl.contains("fbcdn.net")) {
+                    request.addRequestHeader("Referer", "https://www.instagram.com/");
+                } else if (finalUrl.contains("tiktok.com") || finalUrl.contains("tiktokcdn.com")) {
+                    request.addRequestHeader("Referer", "https://www.tiktok.com/");
+                } else if (finalUrl.contains("twimg.com") || finalUrl.contains("twitter.com")) {
+                    request.addRequestHeader("Referer", "https://twitter.com/");
+                }
+
+                String cookies = CookieManager.getInstance().getCookie(finalUrl);
+                if (cookies != null && !cookies.isEmpty()) {
+                    request.addRequestHeader("Cookie", cookies);
+                }
+
+                long downloadId = dm.enqueue(request);
+                Log.i(TAG, "Download enqueued with ID: " + downloadId);
+                Toast.makeText(this, "Download started! Check notification bar", Toast.LENGTH_LONG).show();
+
+                notifyJsDownloadStarted(targetFilename);
+                return;
+            }
+        } catch (Exception dmError) {
+            Log.w(TAG, "DownloadManager failed: " + dmError.getMessage() + ", falling back to Chrome Browser intent");
+        }
+
+        // Fallback: Launch via Chrome / System Browser
+        try {
+            Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(finalUrl));
+            browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            browserIntent.setPackage("com.android.chrome");
+            startActivity(browserIntent);
+            Toast.makeText(this, "Downloading with Chrome...", Toast.LENGTH_SHORT).show();
+            notifyJsDownloadStarted(targetFilename);
+        } catch (Exception chromeError) {
+            try {
+                Intent genericIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(finalUrl));
+                genericIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(genericIntent);
+                notifyJsDownloadStarted(targetFilename);
+            } catch (Exception fallbackError) {
+                Log.e(TAG, "All download methods failed: " + fallbackError.getMessage());
+                Toast.makeText(this, "Error starting download: " + fallbackError.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void notifyJsDownloadStarted(String filename) {
+        mainHandler.post(() -> {
+            WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView == null) return;
+            String js = "if(typeof window.onNativeDownloadStarted==='function')" +
+                        "window.onNativeDownloadStarted('" + filename.replace("'", "\\'") + "');";
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  JS Interface (called from WebView JS)
     // ─────────────────────────────────────────────────────────────────────────
     public class AndroidDownloader {
@@ -676,12 +777,12 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void downloadVideo(String url, String filename, String title) {
-            runOnUiThread(() -> startNativeOkHttpDownload(url, filename, title, "video/mp4", 0));
+            runOnUiThread(() -> launchReliableDownload(url, filename, title, "video/mp4"));
         }
 
         @JavascriptInterface
         public void downloadMedia(String url, String filename, String title, String mimeType) {
-            runOnUiThread(() -> startNativeOkHttpDownload(url, filename, title, mimeType, 0));
+            runOnUiThread(() -> launchReliableDownload(url, filename, title, mimeType));
         }
 
         @JavascriptInterface

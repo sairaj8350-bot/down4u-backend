@@ -1921,20 +1921,42 @@
       // Save to local history
       saveToHistory(currentVideoData);
 
-      // Fallback for browser / non-Android: animate to 100% after 2s since
-      // we have no polling bridge in browser mode
-      if (!window.AndroidDownloader) {
-        setTimeout(() => {
-          if (progressBarFill) progressBarFill.style.width = '100%';
-          if (progressPercent) progressPercent.textContent = '100%';
-          if (progressStatus)  progressStatus.textContent  = 'Download Started!';
-          if (progressSpeed)   progressSpeed.textContent   = 'Check your Downloads folder';
-          if (progressBytes)   progressBytes.textContent   = '';
-          if (startDlBtn)   { startDlBtn.disabled = false; }
-          if (startDlLabel) { startDlLabel.textContent = '✓ Done (Tap to Re-download)'; }
-        }, 2000);
-      }
+      // Smooth completion: after 1.5s, confirm download started and unlock button
+      setTimeout(() => {
+        if (progressBarFill) {
+          progressBarFill.style.transition = 'width 0.8s ease';
+          progressBarFill.style.width = '100%';
+        }
+        if (progressPercent) progressPercent.textContent = '100%';
+        if (progressStatus)  progressStatus.textContent  = '✓ Download Started!';
+        if (progressSpeed)   progressSpeed.textContent   = 'Downloading in background...';
+        if (progressBytes)   progressBytes.textContent   = 'Check notification bar';
+        if (startDlBtn)   { startDlBtn.disabled = false; }
+        if (startDlLabel) { startDlLabel.textContent = '✓ Done (Tap to Download Again)'; }
+      }, 1500);
     }
+
+    // ── Native download started callback from MainActivity ──
+    window.onNativeDownloadStarted = function(filename) {
+      const progressBarFill = document.getElementById('progressBarFill');
+      const progressPercent = document.getElementById('progressPercent');
+      const progressStatus  = document.getElementById('progressStatus');
+      const progressSpeed   = document.getElementById('progressSpeed');
+      const progressBytes   = document.getElementById('progressBytes');
+      const startDlBtn      = document.getElementById('startDlBtn');
+      const startDlLabel    = document.getElementById('startDlLabel');
+
+      if (progressBarFill) {
+        progressBarFill.style.transition = 'width 0.8s ease';
+        progressBarFill.style.width = '100%';
+      }
+      if (progressPercent) progressPercent.textContent = '100%';
+      if (progressStatus)  progressStatus.textContent  = '✓ Download Started!';
+      if (progressSpeed)   progressSpeed.textContent   = 'Check notification bar for real-time progress';
+      if (progressBytes)   progressBytes.textContent   = filename || '';
+      if (startDlBtn)   { startDlBtn.disabled = false; }
+      if (startDlLabel) { startDlLabel.textContent = '✓ Downloaded (Tap to Download Again)'; }
+    };
 
     // ── Real-time progress callback from Android ScheduledExecutorService ─────
     // Called every ~500ms by MainActivity via evaluateJavascript()
